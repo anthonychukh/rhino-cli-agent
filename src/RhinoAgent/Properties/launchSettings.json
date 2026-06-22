@@ -1,0 +1,31 @@
+{
+  "profiles": {
+    "Rhino 8 Windows": {
+      "commandName": "Executable",
+      "executablePath": "C:\\Program Files\\Rhino 8\\System\\Rhino.exe",
+      "commandLineArgs": "/netcore /nosplash -_LoadPlugin \"$(ProjectDir)$(OutputPath)RhinoAgent.rhp\"",
+      "environmentVariables": {
+        "RHINO_PACKAGE_DIRS": "$(ProjectDir)$(OutputPath)\\"
+      },
+      "nativeDebugging": true
+    },
+    "Rhino 8 Windows + MCP": {
+      "commandName": "Executable",
+      "executablePath": "C:\\Program Files\\Rhino 8\\System\\Rhino.exe",
+      "commandLineArgs": "/netcore /nosplash -_LoadPlugin \"$(ProjectDir)$(OutputPath)RhinoAgent.rhp\" /runscript=\"! _mcpstart _Enter\"",
+      "environmentVariables": {
+        "RHINO_PACKAGE_DIRS": "$(ProjectDir)$(OutputPath)\\"
+      },
+      "nativeDebugging": true
+    },
+    "Rhino 8 macOS": {
+      "commandName": "Executable",
+      "executablePath": "/Applications/Rhino 8.app/Contents/MacOS/Rhinoceros",
+      "commandLineArgs": "-_LoadPlugin \"$(ProjectDir)$(OutputPath)RhinoAgent.rhp\"",
+      "environmentVariables": {
+        "RHINO_PACKAGE_DIRS": "$(ProjectDir)$(OutputPath)/"
+      },
+      "nativeDebugging": true
+    }
+  }
+}

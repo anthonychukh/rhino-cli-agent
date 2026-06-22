@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+TestResults/
+artifacts/
+*.yak
+*.rhp.zip
+.DS_Store
+Thumbs.db
+*.log

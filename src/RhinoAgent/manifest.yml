@@ -1,0 +1,13 @@
+---
+name: RhinoAgent
+version: 0.1.0
+authors:
+  - Anthony Chukh
+description: Claude Code / Codex-style command-line agent for Rhino 8.
+keywords:
+  - rhino
+  - ai
+  - agent
+  - codex
+  - claude
+url: https://github.com/anthonychukh/rhino-cli-agent

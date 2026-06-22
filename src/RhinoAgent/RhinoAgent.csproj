@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>12</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <TargetExt>.rhp</TargetExt>
+    <RootNamespace>RhinoAgent</RootNamespace>
+    <AssemblyName>RhinoAgent</AssemblyName>
+    <Version>0.1.0</Version>
+    <Title>Rhino Agent</Title>
+    <Company>Open Source</Company>
+    <Description>Claude Code / Codex-style command-line agent for Rhino 8.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="4.10.0" />
+    <PackageReference Include="RhinoCommon" Version="8.29.26063.11001" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <Target Name="CopyYakManifest" AfterTargets="Build">
+    <Copy SourceFiles="$(MSBuildProjectDirectory)/manifest.yml" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>
