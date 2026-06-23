@@ -34,6 +34,8 @@ public sealed class AgentConfig
     public string? CodexPath { get; set; }
     public string? WorkingDirectory { get; set; }
     public int MaxToolRounds { get; set; } = 4;
+    public bool ShowDebugMessages { get; set; } = true;
+    public bool ShowUsageMessages { get; set; } = true;
 }
 
 public sealed record ProviderStatus(

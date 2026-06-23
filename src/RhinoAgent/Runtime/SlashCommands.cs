@@ -40,6 +40,9 @@ public static class SlashCommands
             case "/status":
                 StatusPrinter.Print(config, services);
                 return SlashCommandResult.Handled;
+            case "/debug":
+                SetDebugMessages(config, arg);
+                return SlashCommandResult.Handled;
             case "/login":
                 if (arg.Length > 0 && !LoginFlow.TryParseProvider(arg, out _))
                 {
@@ -73,7 +76,7 @@ public static class SlashCommands
                 return SlashCommandResult.Handled;
             case "/tokens":
             case "/usage":
-                CommandLineUi.Debug("Token usage is shown after provider turns when the provider emits exact usage.");
+                SetUsageMessages(config, arg);
                 return SlashCommandResult.Handled;
             case "/compact":
                 CommandLineUi.Debug("Compaction is not needed yet. This V0 keeps only the recent in-memory turns and does not persist sessions.");
@@ -99,13 +102,14 @@ public static class SlashCommands
             "  /process [long|stateless]",
             "  /model [model]            Set active provider model",
             "  /mode ask|auto|full|plan",
+            "  /debug on|off            Show or hide debug progress/tool messages",
             "  /run <command>            Run a Rhino command manually while in Agent",
             "  ! <command>               Pass a command or alias directly to Rhino",
             "  _Command / -Command       Native Rhino command passthrough",
             "  Line / user aliases       Direct command and alias passthrough",
             "  /ask <prompt>             Force chat when text starts like a command",
             "  /clear                    Clear this in-memory conversation",
-            "  /usage                    Explain exact usage reporting",
+            "  /usage [on|off]           Show, hide, or explain exact usage reporting",
             "  /exit                     Leave Agent"
         ]));
     }
@@ -118,6 +122,8 @@ public static class SlashCommands
             $"Provider: {config.Provider}",
             $"Provider process: {config.ProviderProcessMode}",
             $"PermissionMode: {config.PermissionMode}",
+            $"Debug messages: {(config.ShowDebugMessages ? "on" : "off")}",
+            $"Usage messages: {(config.ShowUsageMessages ? "on" : "off")}",
             $"Claude model: {config.ClaudeModel}",
             $"Codex model: {config.CodexModel}",
             $"Working directory: {config.WorkingDirectory ?? "(document folder or home)"}"
@@ -179,6 +185,35 @@ public static class SlashCommands
         CommandLineUi.Debug($"Permission mode set to {mode}. Restart Agent to switch provider sandbox/permission arguments.");
     }
 
+    private static void SetDebugMessages(AgentConfig config, string arg)
+    {
+        if (!TryParseOnOff(arg, out var enabled))
+        {
+            CommandLineUi.Debug($"Debug messages are {(config.ShowDebugMessages ? "on" : "off")}. Usage: /debug on|off");
+            return;
+        }
+
+        config.ShowDebugMessages = enabled;
+        AgentConfigStore.Save(config);
+        CommandLineUi.Debug($"Debug messages {(enabled ? "on" : "off")}.");
+    }
+
+    private static void SetUsageMessages(AgentConfig config, string arg)
+    {
+        if (!TryParseOnOff(arg, out var enabled))
+        {
+            CommandLineUi.Debug(
+                $"Usage messages are {(config.ShowUsageMessages ? "on" : "off")}. " +
+                "Exact token and cost usage are shown after provider turns only when the provider emits exact values. " +
+                "Usage: /usage on|off");
+            return;
+        }
+
+        config.ShowUsageMessages = enabled;
+        AgentConfigStore.Save(config);
+        CommandLineUi.Debug($"Usage messages {(enabled ? "on" : "off")}.");
+    }
+
     private static void SetModel(AgentConfig config, string arg)
     {
         if (arg.Length == 0)
@@ -204,4 +239,27 @@ public static class SlashCommands
         "openai" => nameof(AgentProviderKind.Codex),
         _ => arg
     };
+
+    private static bool TryParseOnOff(string arg, out bool enabled)
+    {
+        enabled = false;
+        switch (arg.Trim().ToLowerInvariant())
+        {
+            case "on":
+            case "true":
+            case "yes":
+            case "enable":
+            case "enabled":
+                enabled = true;
+                return true;
+            case "off":
+            case "false":
+            case "no":
+            case "disable":
+            case "disabled":
+                return true;
+            default:
+                return false;
+        }
+    }
 }

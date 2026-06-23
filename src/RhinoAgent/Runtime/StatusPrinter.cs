@@ -13,6 +13,8 @@ public static class StatusPrinter
             $"  Provider preference: {config.Provider}",
             $"  Provider process: {config.ProviderProcessMode}",
             $"  Permission mode: {config.PermissionMode}",
+            $"  Debug messages: {(config.ShowDebugMessages ? "on" : "off")}",
+            $"  Usage messages: {(config.ShowUsageMessages ? "on" : "off")}",
             $"  Claude model: {config.ClaudeModel}",
             $"  Codex model: {config.CodexModel}"
         };

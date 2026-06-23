@@ -26,6 +26,8 @@ public static class AgentPromptBuilder
         sb.AppendLine("</rhino-agent>");
         sb.AppendLine("You may include multiple tool_calls. Do not put tool JSON in markdown fences.");
         sb.AppendLine("After tool results are returned, continue naturally and say what changed.");
+        sb.AppendLine("For geometry creation, prefer execute_csharp with RhinoCommon when a Rhino command would require interactive prompts.");
+        sb.AppendLine("In C# scripts, write messages with output.AppendLine(...) or output.WriteLine(...).");
         sb.AppendLine();
         sb.AppendLine("Available tools:");
         sb.AppendLine(toolDescriptions);

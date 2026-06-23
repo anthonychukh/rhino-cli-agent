@@ -104,12 +104,13 @@ Slash commands inside `Agent`:
 - `/process long|stateless`
 - `/model <model>`
 - `/mode ask|auto|full|plan`
+- `/debug on|off`
 - `/run <rhino command>`
 - `! <rhino command or alias>`
 - `_Command`, `-Command`, `.Command`, known Rhino command names, or aliases for native passthrough
 - `/ask <prompt>` to force chat if a prompt starts like a Rhino command
 - `/clear`
-- `/usage`
+- `/usage [on|off]`
 - `/compact`
 - `/exit`
 
@@ -119,6 +120,8 @@ Slash commands inside `Agent`:
 - `auto`: run read/modeling tools, ask before high-impact script/file operations.
 - `full`: execute all RhinoAgent tool calls without prompting.
 - `plan`: show intended tool calls without executing them.
+
+`/debug off` hides provider progress and tool execution debug messages inside the active `Agent` session. `/usage off` hides the separate usage message line after provider turns.
 
 Exact token and cost usage are only displayed when the provider CLI emits exact usage. RhinoAgent does not estimate usage.
 
@@ -173,7 +176,9 @@ Example:
   "claudePath": null,
   "codexPath": null,
   "workingDirectory": null,
-  "maxToolRounds": 4
+  "maxToolRounds": 4,
+  "showDebugMessages": true,
+  "showUsageMessages": true
 }
 ```
 

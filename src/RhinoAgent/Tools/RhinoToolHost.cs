@@ -40,9 +40,9 @@ public sealed class RhinoToolHost
         """
         - document_summary {}: read document name, units, layers, object counts, and bounding box.
         - list_objects {"limit":100}: list active objects with id, name, layer, type, and bounding box.
-        - run_command {"command":"_Box 0,0,0 10,10,10","echo":false}: run a native Rhino command string.
-        - run_python {"script":"..."}: run Rhino Python through ScriptEditor. Use __rhino_doc__ if available.
-        - execute_csharp {"code":"..."}: run a RhinoCommon C# script with globals doc and output.
+        - run_command {"command":"_Sphere 0,0,0 5","echo":false}: run a complete native Rhino command macro with every prompt answered inline.
+        - run_python {"script":"..."}: run Rhino Python through RunPythonScript when Rhino exposes that command. If Rhino reports an unknown command, use execute_csharp.
+        - execute_csharp {"code":"..."}: run a RhinoCommon C# script with globals doc and output. Prefer this for geometry creation; output supports AppendLine(...) and WriteLine(...).
         - read_file {"path":"relative/or/absolute"}: read a local text file.
         - write_file {"path":"relative/or/absolute","content":"..."}: write a local text file.
         """;

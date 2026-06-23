@@ -37,7 +37,7 @@ public sealed class ApprovalService
         return host.IsHighImpact(call.Tool);
     }
 
-    public static bool PromptForApproval(ToolCallRequest call)
+    public bool PromptForApproval(ToolCallRequest call)
     {
         var getter = new GetOption();
         getter.SetCommandPrompt($"Approve Agent tool '{call.Tool}'?");
@@ -53,7 +53,8 @@ public sealed class ApprovalService
 
         var option = getter.Option();
         var approved = option?.EnglishName == "Yes";
-        CommandLineUi.Debug(approved ? "Approved." : "Denied.");
+        if (_config.ShowDebugMessages)
+            CommandLineUi.Debug(approved ? "Approved." : "Denied.");
         return approved;
     }
 }

@@ -146,7 +146,9 @@ public sealed class AgentProviderSelfTestCommand : Command
             ClaudePath = source.ClaudePath,
             CodexPath = source.CodexPath,
             WorkingDirectory = source.WorkingDirectory,
-            MaxToolRounds = 1
+            MaxToolRounds = 1,
+            ShowDebugMessages = source.ShowDebugMessages,
+            ShowUsageMessages = source.ShowUsageMessages
         };
 
     private static void WriteResult(string outputPath, object payload)

@@ -6,9 +6,11 @@ public static class CommandLineUi
 {
     private const string UserIcon = "▶";
     private const string DebugIcon = "•";
+    private const string UsageIcon = "$";
     private const string AgentIcon = "◀";
     private const string UserLabel = "You";
     private const string DebugLabel = "Debug";
+    private const string UsageLabel = "Usage";
     private const string AgentLabel = "Agent";
     private const int ThinkingFrameMs = 350;
 
@@ -29,12 +31,16 @@ public static class CommandLineUi
     public static void Debug(string message) =>
         WriteEntry(EntryKind.Debug, DebugIcon, DebugLabel, message);
 
+    public static void Usage(string message) =>
+        WriteEntry(EntryKind.Usage, UsageIcon, UsageLabel, message);
+
     public static void AgentResponse(string message) =>
         WriteEntry(EntryKind.Agent, AgentIcon, AgentLabel, message);
 
-    public static IDisposable Thinking(string message)
+    public static IDisposable Thinking(string message, bool writeEntry = true)
     {
-        Debug($"{message}...");
+        if (writeEntry)
+            Debug($"{message}...");
         return new ThinkingIndicator(message);
     }
 
@@ -55,7 +61,12 @@ public static class CommandLineUi
     }
 
     private static bool ShouldSeparate(EntryKind kind) =>
-        kind != EntryKind.Debug || LastEntryKind != EntryKind.Debug;
+        kind switch
+        {
+            EntryKind.Debug => LastEntryKind != EntryKind.Debug,
+            EntryKind.Usage => LastEntryKind != EntryKind.Usage,
+            _ => true
+        };
 
     private static string[] SplitLines(string message)
     {
@@ -131,6 +142,7 @@ public static class CommandLineUi
     private enum EntryKind
     {
         Debug,
+        Usage,
         Agent
     }
 }

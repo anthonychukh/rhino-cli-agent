@@ -88,6 +88,8 @@ public sealed class AgentConfigCommand : Command
             $"Provider: {config.Provider}",
             $"ProcessMode: {config.ProviderProcessMode}",
             $"PermissionMode: {config.PermissionMode}",
+            $"DebugMessages: {(config.ShowDebugMessages ? "on" : "off")}",
+            $"UsageMessages: {(config.ShowUsageMessages ? "on" : "off")}",
             $"ClaudeModel: {config.ClaudeModel}",
             $"CodexModel: {config.CodexModel}",
             $"WorkingDirectory: {config.WorkingDirectory ?? "(document folder or home)"}"

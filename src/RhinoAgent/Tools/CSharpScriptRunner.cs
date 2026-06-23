@@ -1,11 +1,24 @@
 using System.Reflection;
 using System.Text;
+using System.Globalization;
 using Microsoft.CodeAnalysis.CSharp.Scripting;
 using Microsoft.CodeAnalysis.Scripting;
 using Rhino;
 using Rhino.Geometry;
 
 namespace RhinoAgent.Tools;
+
+public static class ScriptOutputExtensions
+{
+    public static StringBuilder Write(this StringBuilder output, object? value) =>
+        output.Append(Convert.ToString(value, CultureInfo.InvariantCulture));
+
+    public static StringBuilder WriteLine(this StringBuilder output) =>
+        output.AppendLine();
+
+    public static StringBuilder WriteLine(this StringBuilder output, object? value) =>
+        output.AppendLine(Convert.ToString(value, CultureInfo.InvariantCulture));
+}
 
 public sealed class CSharpScriptGlobals
 {
@@ -49,6 +62,7 @@ public static class CSharpScriptRunner
                 typeof(Enumerable).Assembly,
                 typeof(RhinoDoc).Assembly,
                 typeof(Point3d).Assembly,
+                typeof(CSharpScriptRunner).Assembly,
                 Assembly.Load("System.Runtime"))
             .AddImports(
                 "System",
@@ -58,6 +72,7 @@ public static class CSharpScriptRunner
                 "Rhino",
                 "Rhino.Geometry",
                 "Rhino.DocObjects",
-                "Rhino.Commands");
+                "Rhino.Commands",
+                "RhinoAgent.Tools");
     }
 }

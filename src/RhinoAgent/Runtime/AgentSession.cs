@@ -54,7 +54,9 @@ public sealed class AgentSession
             diagnostics?.Invoke("thinking-write-start");
             var lastProgressMessage = "";
             AgentProviderResult providerResult;
-            using (CommandLineUi.Thinking(round == 0 ? "Agent is thinking" : "Agent is checking tool results"))
+            using (CommandLineUi.Thinking(
+                round == 0 ? "Agent is thinking" : "Agent is checking tool results",
+                _config.ShowDebugMessages))
             {
                 diagnostics?.Invoke("thinking-write-complete");
                 diagnostics?.Invoke("provider-run-start");
@@ -67,7 +69,7 @@ public sealed class AgentSession
                                 && !string.IsNullOrWhiteSpace(progress.Message)
                                 && !string.Equals(progress.Message, lastProgressMessage, StringComparison.Ordinal))
                             {
-                                CommandLineUi.Debug(progress.Message);
+                                Debug(progress.Message);
                                 lastProgressMessage = progress.Message;
                             }
                         },
@@ -80,9 +82,9 @@ public sealed class AgentSession
 
             if (providerResult.ExitCode != 0)
             {
-                CommandLineUi.Debug($"Provider exited with code {providerResult.ExitCode}.");
+                Debug($"Provider exited with code {providerResult.ExitCode}.");
                 if (!string.IsNullOrWhiteSpace(providerResult.StandardError))
-                    CommandLineUi.Debug(providerResult.StandardError.Trim());
+                    Debug(providerResult.StandardError.Trim());
                 return BuildResult(
                     false,
                     providerResult,
@@ -122,22 +124,22 @@ public sealed class AgentSession
             {
                 if (!_approvals.ShouldExecute(call, _toolHost, out var reason))
                 {
-                    CommandLineUi.Debug($"Plan: {call.Tool} {FormatArguments(call.Arguments)}");
+                    Debug($"Plan: {call.Tool} {FormatArguments(call.Arguments)}");
                     toolResults.Add(new ToolExecutionResult(call.Tool, false, reason, false, true));
                     continue;
                 }
 
-                if (_approvals.RequiresPrompt(call, _toolHost) && !ApprovalService.PromptForApproval(call))
+                if (_approvals.RequiresPrompt(call, _toolHost) && !_approvals.PromptForApproval(call))
                 {
                     toolResults.Add(new ToolExecutionResult(call.Tool, false, "User denied tool call.", false, true));
                     continue;
                 }
 
-                CommandLineUi.Debug($"Running tool: {call.Tool}");
+                Debug($"Running tool: {call.Tool}");
                 var result = await _toolHost.ExecuteAsync(call);
-                CommandLineUi.Debug(result.Success ? $"Tool complete: {call.Tool}" : $"Tool failed: {call.Tool}");
+                Debug(result.Success ? $"Tool complete: {call.Tool}" : $"Tool failed: {call.Tool}");
                 if (!string.IsNullOrWhiteSpace(result.Output))
-                    CommandLineUi.Debug(TrimForCommandLine(result.Output));
+                    Debug(TrimForCommandLine(result.Output));
                 toolResults.Add(result);
                 totalToolResults++;
             }
@@ -145,7 +147,7 @@ public sealed class AgentSession
             _history.Add(("tool", ToolResultFormatter.Format(toolResults)));
         }
 
-        CommandLineUi.Debug("Agent stopped after the configured tool-round limit. Raise maxToolRounds in config.json if needed.");
+        Debug("Agent stopped after the configured tool-round limit. Raise maxToolRounds in config.json if needed.");
         return BuildResult(
             false,
             lastProviderResult,
@@ -156,8 +158,11 @@ public sealed class AgentSession
             "Agent stopped after the configured tool-round limit.");
     }
 
-    private static void PrintUsage(AgentProviderResult result)
+    private void PrintUsage(AgentProviderResult result)
     {
+        if (!_config.ShowUsageMessages)
+            return;
+
         var usage = result.Usage;
         if (usage is null)
             return;
@@ -179,7 +184,13 @@ public sealed class AgentSession
             parts.Add($"cost ${usage.CostUsd.Value:0.######}");
 
         if (parts.Count > 0)
-            CommandLineUi.Debug($"Usage: {string.Join(", ", parts)}");
+            CommandLineUi.Usage(string.Join(", ", parts));
+    }
+
+    private void Debug(string message)
+    {
+        if (_config.ShowDebugMessages)
+            CommandLineUi.Debug(message);
     }
 
     private static string FormatArguments(Dictionary<string, object?> args) =>
