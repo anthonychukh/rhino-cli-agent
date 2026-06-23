@@ -28,7 +28,11 @@ public sealed class AgentSession
         _approvals = approvals;
     }
 
-    public void Clear() => _history.Clear();
+    public void Clear()
+    {
+        _history.Clear();
+        _provider.Reset();
+    }
 
     public async Task<AgentTurnResult> RunUserTurnAsync(
         string userMessage,

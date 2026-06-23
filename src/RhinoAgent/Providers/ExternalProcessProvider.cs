@@ -19,6 +19,7 @@ public abstract class ExternalProcessProvider : IAgentProvider
 
     public abstract AgentProviderKind Kind { get; }
     public abstract string DisplayName { get; }
+    public AgentProviderProcessMode ProcessMode => AgentProviderProcessMode.Stateless;
     protected string Model { get; }
     protected AgentPermissionMode PermissionMode { get; }
 
@@ -196,6 +197,14 @@ public abstract class ExternalProcessProvider : IAgentProvider
 
     protected abstract IReadOnlyList<string> BuildArguments(string prompt);
     protected abstract IProviderOutputCollector CreateCollector(Action<AgentProgress> progress);
+
+    public void Reset()
+    {
+    }
+
+    public void Dispose()
+    {
+    }
 
     protected static long? ReadLong(JsonElement element, string property)
     {

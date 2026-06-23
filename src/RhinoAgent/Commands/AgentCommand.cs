@@ -32,32 +32,36 @@ public sealed class AgentCommand : Command
         }
 
         RhinoApp.WriteLine($"  Provider: {provider.DisplayName}");
+        RhinoApp.WriteLine($"  Process: {provider.ProcessMode}");
         RhinoApp.WriteLine($"  Mode: {config.PermissionMode}");
 
-        var session = new AgentSession(doc, config, provider, services.ToolHost, services.Approvals);
-        while (true)
+        using (provider)
         {
-            var input = ReadLiteralLine("Agent");
-            if (input is null)
-                return Result.Cancel;
+            var session = new AgentSession(doc, config, provider, services.ToolHost, services.Approvals);
+            while (true)
+            {
+                var input = ReadLiteralLine("Agent");
+                if (input is null)
+                    return Result.Cancel;
 
-            input = input.Trim();
-            if (input.Length == 0)
-                continue;
+                input = input.Trim();
+                if (input.Length == 0)
+                    continue;
 
-            if (TryHandleForcedPrompt(input, session))
-                continue;
+                if (TryHandleForcedPrompt(input, session))
+                    continue;
 
-            if (TryRunManualRhinoCommand(input))
-                continue;
+                if (TryRunManualRhinoCommand(input))
+                    continue;
 
-            var slashResult = SlashCommands.TryHandle(input, config, session, services);
-            if (slashResult == SlashCommandResult.Exit)
-                return Result.Success;
-            if (slashResult == SlashCommandResult.Handled)
-                continue;
+                var slashResult = SlashCommands.TryHandle(input, config, session, services);
+                if (slashResult == SlashCommandResult.Exit)
+                    return Result.Success;
+                if (slashResult == SlashCommandResult.Handled)
+                    continue;
 
-            RunAgentTurn(session, input);
+                RunAgentTurn(session, input);
+            }
         }
     }
 

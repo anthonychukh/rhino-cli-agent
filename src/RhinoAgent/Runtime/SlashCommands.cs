@@ -55,6 +55,11 @@ public static class SlashCommands
             case "/provider":
                 SetProvider(config, arg);
                 return SlashCommandResult.Handled;
+            case "/process":
+            case "/processmode":
+            case "/providerprocess":
+                SetProviderProcessMode(config, arg);
+                return SlashCommandResult.Handled;
             case "/permissions":
             case "/permission":
             case "/mode":
@@ -89,6 +94,7 @@ public static class SlashCommands
         RhinoApp.WriteLine("  /status                   Show provider/auth/config status");
         RhinoApp.WriteLine("  /login [claude|codex]     Start provider login in a terminal");
         RhinoApp.WriteLine("  /provider [auto|claude|codex]");
+        RhinoApp.WriteLine("  /process [long|stateless]");
         RhinoApp.WriteLine("  /model [model]            Set active provider model");
         RhinoApp.WriteLine("  /mode [ask|auto|full|plan]");
         RhinoApp.WriteLine("  /run <command>            Run a Rhino command manually while in Agent");
@@ -105,6 +111,7 @@ public static class SlashCommands
     {
         RhinoApp.WriteLine($"Config path: {AgentConfigStore.ConfigPath}");
         RhinoApp.WriteLine($"Provider: {config.Provider}");
+        RhinoApp.WriteLine($"Provider process: {config.ProviderProcessMode}");
         RhinoApp.WriteLine($"PermissionMode: {config.PermissionMode}");
         RhinoApp.WriteLine($"Claude model: {config.ClaudeModel}");
         RhinoApp.WriteLine($"Codex model: {config.CodexModel}");
@@ -122,6 +129,26 @@ public static class SlashCommands
         config.Provider = provider;
         AgentConfigStore.Save(config);
         RhinoApp.WriteLine($"Provider set to {config.Provider}. Restart Agent to switch provider.");
+    }
+
+    private static void SetProviderProcessMode(AgentConfig config, string arg)
+    {
+        var normalized = arg.Trim().ToLowerInvariant() switch
+        {
+            "long" or "longrunning" or "persistent" or "appserver" => nameof(AgentProviderProcessMode.LongRunning),
+            "stateless" or "perturn" or "exec" => nameof(AgentProviderProcessMode.Stateless),
+            _ => ""
+        };
+
+        if (!Enum.TryParse<AgentProviderProcessMode>(normalized, out var mode))
+        {
+            RhinoApp.WriteLine("Usage: /process long|stateless");
+            return;
+        }
+
+        config.ProviderProcessMode = mode;
+        AgentConfigStore.Save(config);
+        RhinoApp.WriteLine($"Provider process mode set to {mode}. Restart Agent to switch provider process architecture.");
     }
 
     private static void SetPermission(AgentConfig config, string arg)
@@ -143,7 +170,7 @@ public static class SlashCommands
 
         config.PermissionMode = mode;
         AgentConfigStore.Save(config);
-        RhinoApp.WriteLine($"Permission mode set to {mode}.");
+        RhinoApp.WriteLine($"Permission mode set to {mode}. Restart Agent to switch provider sandbox/permission arguments.");
     }
 
     private static void SetModel(AgentConfig config, string arg)

@@ -10,6 +10,7 @@ public static class StatusPrinter
         RhinoApp.WriteLine("RhinoAgent status");
         RhinoApp.WriteLine($"  Config: {AgentConfigStore.ConfigPath}");
         RhinoApp.WriteLine($"  Provider preference: {config.Provider}");
+        RhinoApp.WriteLine($"  Provider process: {config.ProviderProcessMode}");
         RhinoApp.WriteLine($"  Permission mode: {config.PermissionMode}");
         RhinoApp.WriteLine($"  Claude model: {config.ClaudeModel}");
         RhinoApp.WriteLine($"  Codex model: {config.CodexModel}");

@@ -63,6 +63,8 @@ public sealed class ProviderFactory
         var cwd = WorkingDirectoryResolver.Resolve(_doc, _config.WorkingDirectory);
         return provider switch
         {
+            AgentProviderKind.Codex when _config.ProviderProcessMode == AgentProviderProcessMode.LongRunning =>
+                new CodexAppServerProvider(executablePath, _config.CodexModel, _config.PermissionMode, cwd),
             AgentProviderKind.Codex => new CodexCliProvider(executablePath, _config.CodexModel, _config.PermissionMode, cwd),
             _ => new ClaudeCliProvider(executablePath, _config.ClaudeModel, _config.PermissionMode, cwd)
         };

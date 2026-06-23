@@ -17,10 +17,17 @@ public enum AgentPermissionMode
     Plan
 }
 
+public enum AgentProviderProcessMode
+{
+    LongRunning,
+    Stateless
+}
+
 public sealed class AgentConfig
 {
     public AgentProviderKind Provider { get; set; } = AgentProviderKind.Auto;
     public AgentPermissionMode PermissionMode { get; set; } = AgentPermissionMode.Ask;
+    public AgentProviderProcessMode ProviderProcessMode { get; set; } = AgentProviderProcessMode.LongRunning;
     public string ClaudeModel { get; set; } = "claude-opus-4-8";
     public string CodexModel { get; set; } = "gpt-5.5";
     public string? ClaudePath { get; set; }

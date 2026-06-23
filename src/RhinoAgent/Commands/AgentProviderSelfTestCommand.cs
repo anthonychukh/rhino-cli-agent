@@ -40,36 +40,58 @@ public sealed class AgentProviderSelfTestCommand : Command
 
         try
         {
+            using var providerScope = provider;
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(120));
             var session = new AgentSession(doc, config, provider, services.ToolHost, services.Approvals);
             WriteProgress(progressPath, "session-created");
-            var result = session.RunUserTurnAsync(
+            var firstResult = session.RunUserTurnAsync(
                     "Provider smoke test. Reply exactly RHINO_AGENT_PROVIDER_OK and do not call tools.",
                     cancellation.Token,
                     message => WriteProgress(progressPath, message))
                 .GetAwaiter()
                 .GetResult();
-            WriteProgress(progressPath, $"turn-complete: {result.Success}");
+            WriteProgress(progressPath, $"first-turn-complete: {firstResult.Success}");
 
-            var ok = result.Success
-                && result.VisibleText.Contains("RHINO_AGENT_PROVIDER_OK", StringComparison.OrdinalIgnoreCase);
+            var secondResult = session.RunUserTurnAsync(
+                    "Provider smoke test continuation. Reply exactly RHINO_AGENT_PROVIDER_OK_2 and do not call tools.",
+                    cancellation.Token,
+                    message => WriteProgress(progressPath, message))
+                .GetAwaiter()
+                .GetResult();
+            WriteProgress(progressPath, $"second-turn-complete: {secondResult.Success}");
+
+            var sameProviderSession = string.Equals(
+                firstResult.SessionId,
+                secondResult.SessionId,
+                StringComparison.Ordinal);
+            var requiresSameSession = provider.ProcessMode == AgentProviderProcessMode.LongRunning;
+            var ok = firstResult.Success
+                && secondResult.Success
+                && firstResult.VisibleText.Contains("RHINO_AGENT_PROVIDER_OK", StringComparison.OrdinalIgnoreCase)
+                && secondResult.VisibleText.Contains("RHINO_AGENT_PROVIDER_OK_2", StringComparison.OrdinalIgnoreCase)
+                && (!requiresSameSession || sameProviderSession);
 
             WriteResult(outputPath, new
             {
                 ok,
                 command = EnglishName,
                 timestampUtc = DateTimeOffset.UtcNow,
-                provider = result.Provider,
-                model = result.Model,
-                sessionId = result.SessionId,
-                usage = result.Usage,
-                providerExitCode = result.ProviderExitCode,
-                standardError = result.StandardError,
-                visibleText = result.VisibleText,
-                toolCallCount = result.ToolCallCount,
-                toolResultCount = result.ToolResultCount,
-                stoppedAfterToolLimit = result.StoppedAfterToolLimit,
-                error = result.Error
+                provider = secondResult.Provider,
+                processMode = provider.ProcessMode,
+                model = secondResult.Model,
+                sessionId = secondResult.SessionId,
+                firstSessionId = firstResult.SessionId,
+                secondSessionId = secondResult.SessionId,
+                sameProviderSession,
+                usage = secondResult.Usage,
+                providerExitCode = secondResult.ProviderExitCode,
+                standardError = secondResult.StandardError,
+                firstVisibleText = firstResult.VisibleText,
+                secondVisibleText = secondResult.VisibleText,
+                toolCallCount = firstResult.ToolCallCount + secondResult.ToolCallCount,
+                toolResultCount = firstResult.ToolResultCount + secondResult.ToolResultCount,
+                stoppedAfterToolLimit = firstResult.StoppedAfterToolLimit || secondResult.StoppedAfterToolLimit,
+                error = FirstNonEmpty(firstResult.Error, secondResult.Error)
             });
 
             RhinoApp.WriteLine(ok
@@ -118,6 +140,7 @@ public sealed class AgentProviderSelfTestCommand : Command
         {
             Provider = source.Provider,
             PermissionMode = AgentPermissionMode.Ask,
+            ProviderProcessMode = source.ProviderProcessMode,
             ClaudeModel = source.ClaudeModel,
             CodexModel = source.CodexModel,
             ClaudePath = source.ClaudePath,
@@ -131,7 +154,8 @@ public sealed class AgentProviderSelfTestCommand : Command
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
         File.WriteAllText(outputPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions
         {
-            WriteIndented = true
+            WriteIndented = true,
+            Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
         }));
     }
 
@@ -145,4 +169,7 @@ public sealed class AgentProviderSelfTestCommand : Command
     {
         File.AppendAllText(progressPath, $"[{DateTimeOffset.UtcNow:O}] {message}{Environment.NewLine}");
     }
+
+    private static string? FirstNonEmpty(params string?[] values) =>
+        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
 }

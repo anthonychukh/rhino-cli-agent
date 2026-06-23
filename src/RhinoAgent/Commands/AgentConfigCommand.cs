@@ -15,11 +15,13 @@ public sealed class AgentConfigCommand : Command
     {
         var config = AgentConfigStore.Load();
         var provider = config.Provider;
+        var processMode = config.ProviderProcessMode;
         var permissions = config.PermissionMode;
 
         var getter = new GetOption();
         getter.SetCommandPrompt("RhinoAgent config");
         getter.AddOptionEnumList("Provider", provider);
+        getter.AddOptionEnumList("ProcessMode", processMode);
         getter.AddOptionEnumList("PermissionMode", permissions);
         getter.AddOption("Show");
         getter.AddOption("Save");
@@ -43,6 +45,10 @@ public sealed class AgentConfigCommand : Command
                     provider = (AgentProviderKind)option.CurrentListOptionIndex;
                     RhinoApp.WriteLine($"Provider = {provider}");
                     break;
+                case "ProcessMode":
+                    processMode = (AgentProviderProcessMode)option.CurrentListOptionIndex;
+                    RhinoApp.WriteLine($"ProcessMode = {processMode}");
+                    break;
                 case "PermissionMode":
                     permissions = (AgentPermissionMode)option.CurrentListOptionIndex;
                     RhinoApp.WriteLine($"PermissionMode = {permissions}");
@@ -51,18 +57,23 @@ public sealed class AgentConfigCommand : Command
                     PrintConfig(config);
                     break;
                 case "Save":
-                    Save(config, provider, permissions);
+                    Save(config, provider, processMode, permissions);
                     return Result.Success;
             }
         }
 
-        Save(config, provider, permissions);
+        Save(config, provider, processMode, permissions);
         return Result.Success;
     }
 
-    private static void Save(AgentConfig config, AgentProviderKind provider, AgentPermissionMode permissions)
+    private static void Save(
+        AgentConfig config,
+        AgentProviderKind provider,
+        AgentProviderProcessMode processMode,
+        AgentPermissionMode permissions)
     {
         config.Provider = provider;
+        config.ProviderProcessMode = processMode;
         config.PermissionMode = permissions;
         AgentConfigStore.Save(config);
         RhinoApp.WriteLine("RhinoAgent config saved.");
@@ -72,6 +83,7 @@ public sealed class AgentConfigCommand : Command
     {
         RhinoApp.WriteLine($"Config path: {AgentConfigStore.ConfigPath}");
         RhinoApp.WriteLine($"Provider: {config.Provider}");
+        RhinoApp.WriteLine($"ProcessMode: {config.ProviderProcessMode}");
         RhinoApp.WriteLine($"PermissionMode: {config.PermissionMode}");
         RhinoApp.WriteLine($"ClaudeModel: {config.ClaudeModel}");
         RhinoApp.WriteLine($"CodexModel: {config.CodexModel}");

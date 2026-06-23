@@ -14,7 +14,7 @@ This is an early V0 meant for hands-on testing.
 - Plug-in format: RhinoCommon `.rhp`
 - Providers: Claude Code CLI and Codex CLI
 - Auth: delegates to the official provider CLI login flows
-- Session persistence: in-memory only for V0
+- Session persistence: in-memory only for V0; Codex uses one long-running app-server process per `Agent` session by default
 - Grasshopper: planned, not implemented yet
 
 ## Build
@@ -91,7 +91,7 @@ Rhino commands:
 - `Agent` starts the command-line agent session.
 - `AgentLogin` starts provider login.
 - `AgentStatus` prints provider, auth, model, and config status.
-- `AgentConfig` edits provider and permission mode from Rhino options.
+- `AgentConfig` edits provider, provider process mode, and permission mode from Rhino options.
 - `AgentSelfTest` writes a JSON smoke-test result to the system temp folder.
 - `AgentProviderSelfTest` verifies that the selected logged-in provider can answer through the real `Agent` session path.
 
@@ -101,6 +101,7 @@ Slash commands inside `Agent`:
 - `/status`
 - `/login`
 - `/provider auto|claude|codex`
+- `/process long|stateless`
 - `/model <model>`
 - `/mode ask|auto|full|plan`
 - `/run <rhino command>`
@@ -121,11 +122,22 @@ Slash commands inside `Agent`:
 
 Exact token and cost usage are only displayed when the provider CLI emits exact usage. RhinoAgent does not estimate usage.
 
+## Provider Process Modes
+
+- `long`: for Codex, start one `codex app-server --stdio` process when the provider is first used, keep one ephemeral Codex thread alive, and send each provider round as a `turn/start` on that thread.
+- `stateless`: use the previous one-shot CLI behavior, such as `codex exec --json`, for each provider round.
+
+`long` is the default process mode. Claude Code currently keeps the existing print-mode provider path; the long-running app-server implementation is Codex-specific.
+
+Changing `/process` or `/mode` saves config immediately, but restart `Agent` to switch the provider process architecture or provider-level sandbox settings for the already-created provider object.
+
 ## Tool Surface
 
 The model emits hidden `<rhino-agent>{...}</rhino-agent>` tool blocks. RhinoAgent parses those blocks, executes them in-process, returns results to the model, and then asks the model to continue.
 
 For Claude Code, RhinoAgent disables Claude's native tool list for provider turns and keeps session persistence off. This keeps Rhino/file actions inside RhinoAgent's permission modes instead of letting the external CLI act on its own.
+
+For Codex long-running mode, RhinoAgent uses the app-server JSONL protocol directly instead of launching `codex exec` for every prompt. `/clear` clears RhinoAgent history and starts a fresh Codex thread on the next provider turn.
 
 Current tools:
 
@@ -155,6 +167,7 @@ Example:
 {
   "provider": "Claude",
   "permissionMode": "Ask",
+  "providerProcessMode": "LongRunning",
   "claudeModel": "claude-opus-4-8",
   "codexModel": "gpt-5.5",
   "claudePath": null,
