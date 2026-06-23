@@ -18,29 +18,33 @@ public sealed class AgentCommand : Command
         var config = AgentConfigStore.Load();
         var services = AgentServices.Create(config, doc);
 
-        RhinoApp.WriteLine("RhinoAgent");
-        RhinoApp.WriteLine($"  Config: {AgentConfigStore.ConfigPath}");
-        RhinoApp.WriteLine("  Type /help for commands, /exit to leave, /run or ! for manual Rhino command passthrough.");
+        CommandLineUi.Debug(
+            $"RhinoAgent{Environment.NewLine}" +
+            $"  Config: {AgentConfigStore.ConfigPath}{Environment.NewLine}" +
+            "  Type /help for commands, /exit to leave, /run or ! for manual Rhino command passthrough.");
 
         var provider = services.ProviderFactory.ResolveInteractiveProvider(config);
         if (provider is null)
         {
-            RhinoApp.WriteLine("No logged-in Claude or Codex CLI was detected.");
-            RhinoApp.WriteLine("Starting first-run login. Choose a provider in the prompt below.");
+            CommandLineUi.Debug(
+                "No logged-in Claude or Codex CLI was detected." + Environment.NewLine +
+                "Starting first-run login. Choose a provider in the prompt below.");
             LoginFlow.Run(config, services);
             return Result.Success;
         }
 
-        RhinoApp.WriteLine($"  Provider: {provider.DisplayName}");
-        RhinoApp.WriteLine($"  Process: {provider.ProcessMode}");
-        RhinoApp.WriteLine($"  Mode: {config.PermissionMode}");
+        CommandLineUi.Debug(
+            $"Provider: {provider.DisplayName}{Environment.NewLine}" +
+            $"Process: {provider.ProcessMode}{Environment.NewLine}" +
+            $"Mode: {config.PermissionMode}");
 
         using (provider)
         {
             var session = new AgentSession(doc, config, provider, services.ToolHost, services.Approvals);
             while (true)
             {
-                var input = ReadLiteralLine("Agent");
+                CommandLineUi.Separator();
+                var input = ReadLiteralLine(CommandLineUi.UserPrompt);
                 if (input is null)
                     return Result.Cancel;
 
@@ -89,7 +93,7 @@ public sealed class AgentCommand : Command
         }
         catch (Exception ex)
         {
-            RhinoApp.WriteLine($"Agent error: {ex.Message}");
+            CommandLineUi.Debug($"Agent error: {ex.Message}");
         }
     }
 
@@ -105,7 +109,7 @@ public sealed class AgentCommand : Command
             : input[askCommand.Length..].TrimStart();
 
         if (prompt.Length == 0)
-            RhinoApp.WriteLine("Usage: /ask <prompt>");
+            CommandLineUi.Debug("Usage: /ask <prompt>");
         else
             RunAgentTurn(session, prompt);
 
@@ -119,12 +123,12 @@ public sealed class AgentCommand : Command
 
         if (command.Length == 0)
         {
-            RhinoApp.WriteLine("Usage: ! _RhinoCommand arguments");
+            CommandLineUi.Debug("Usage: ! _RhinoCommand arguments");
             return true;
         }
 
         if (matchedBy is "alias")
-            RhinoApp.WriteLine($"Alias -> {command}");
+            CommandLineUi.Debug($"Alias -> {command}");
         RhinoApp.RunScript(command, true);
         return true;
     }

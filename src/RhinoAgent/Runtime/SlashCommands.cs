@@ -35,7 +35,7 @@ public static class SlashCommands
                 return SlashCommandResult.Handled;
             case "/clear":
                 session.Clear();
-                RhinoApp.WriteLine("Conversation cleared for this Rhino Agent session.");
+                CommandLineUi.Debug("Conversation cleared for this Rhino Agent session.");
                 return SlashCommandResult.Handled;
             case "/status":
                 StatusPrinter.Print(config, services);
@@ -43,7 +43,7 @@ public static class SlashCommands
             case "/login":
                 if (arg.Length > 0 && !LoginFlow.TryParseProvider(arg, out _))
                 {
-                    RhinoApp.WriteLine("Usage: /login claude|codex");
+                    CommandLineUi.Debug("Usage: /login claude|codex");
                     return SlashCommandResult.Handled;
                 }
 
@@ -67,68 +67,74 @@ public static class SlashCommands
                 return SlashCommandResult.Handled;
             case "/run":
                 if (arg.Length == 0)
-                    RhinoApp.WriteLine("Usage: /run _RhinoCommand arguments");
+                    CommandLineUi.Debug("Usage: /run _RhinoCommand arguments");
                 else
                     RhinoApp.RunScript(arg, true);
                 return SlashCommandResult.Handled;
             case "/tokens":
             case "/usage":
-                RhinoApp.WriteLine("Token usage is shown after provider turns when the provider emits exact usage.");
+                CommandLineUi.Debug("Token usage is shown after provider turns when the provider emits exact usage.");
                 return SlashCommandResult.Handled;
             case "/compact":
-                RhinoApp.WriteLine("Compaction is not needed yet. This V0 keeps only the recent in-memory turns and does not persist sessions.");
+                CommandLineUi.Debug("Compaction is not needed yet. This V0 keeps only the recent in-memory turns and does not persist sessions.");
                 return SlashCommandResult.Handled;
             case "/config":
                 PrintConfig(config);
                 return SlashCommandResult.Handled;
             default:
-                RhinoApp.WriteLine($"Unknown slash command: {command}. Type /help.");
+                CommandLineUi.Debug($"Unknown slash command: {command}. Type /help.");
                 return SlashCommandResult.Handled;
         }
     }
 
     private static void PrintHelp()
     {
-        RhinoApp.WriteLine("RhinoAgent slash commands:");
-        RhinoApp.WriteLine("  /help                     Show this help");
-        RhinoApp.WriteLine("  /status                   Show provider/auth/config status");
-        RhinoApp.WriteLine("  /login [claude|codex]     Start provider login in a terminal");
-        RhinoApp.WriteLine("  /provider [auto|claude|codex]");
-        RhinoApp.WriteLine("  /process [long|stateless]");
-        RhinoApp.WriteLine("  /model [model]            Set active provider model");
-        RhinoApp.WriteLine("  /mode [ask|auto|full|plan]");
-        RhinoApp.WriteLine("  /run <command>            Run a Rhino command manually while in Agent");
-        RhinoApp.WriteLine("  ! <command>               Pass a command or alias directly to Rhino");
-        RhinoApp.WriteLine("  _Command / -Command       Native Rhino command passthrough");
-        RhinoApp.WriteLine("  Line / user aliases       Direct command and alias passthrough");
-        RhinoApp.WriteLine("  /ask <prompt>             Force chat when text starts like a command");
-        RhinoApp.WriteLine("  /clear                    Clear this in-memory conversation");
-        RhinoApp.WriteLine("  /usage                    Explain exact usage reporting");
-        RhinoApp.WriteLine("  /exit                     Leave Agent");
+        CommandLineUi.Debug(string.Join(Environment.NewLine,
+        [
+            "RhinoAgent slash commands:",
+            "  /help                     Show this help",
+            "  /status                   Show provider/auth/config status",
+            "  /login [claude|codex]     Start provider login in a terminal",
+            "  /provider [auto|claude|codex]",
+            "  /process [long|stateless]",
+            "  /model [model]            Set active provider model",
+            "  /mode ask|auto|full|plan",
+            "  /run <command>            Run a Rhino command manually while in Agent",
+            "  ! <command>               Pass a command or alias directly to Rhino",
+            "  _Command / -Command       Native Rhino command passthrough",
+            "  Line / user aliases       Direct command and alias passthrough",
+            "  /ask <prompt>             Force chat when text starts like a command",
+            "  /clear                    Clear this in-memory conversation",
+            "  /usage                    Explain exact usage reporting",
+            "  /exit                     Leave Agent"
+        ]));
     }
 
     private static void PrintConfig(AgentConfig config)
     {
-        RhinoApp.WriteLine($"Config path: {AgentConfigStore.ConfigPath}");
-        RhinoApp.WriteLine($"Provider: {config.Provider}");
-        RhinoApp.WriteLine($"Provider process: {config.ProviderProcessMode}");
-        RhinoApp.WriteLine($"PermissionMode: {config.PermissionMode}");
-        RhinoApp.WriteLine($"Claude model: {config.ClaudeModel}");
-        RhinoApp.WriteLine($"Codex model: {config.CodexModel}");
-        RhinoApp.WriteLine($"Working directory: {config.WorkingDirectory ?? "(document folder or home)"}");
+        CommandLineUi.Debug(string.Join(Environment.NewLine,
+        [
+            $"Config path: {AgentConfigStore.ConfigPath}",
+            $"Provider: {config.Provider}",
+            $"Provider process: {config.ProviderProcessMode}",
+            $"PermissionMode: {config.PermissionMode}",
+            $"Claude model: {config.ClaudeModel}",
+            $"Codex model: {config.CodexModel}",
+            $"Working directory: {config.WorkingDirectory ?? "(document folder or home)"}"
+        ]));
     }
 
     private static void SetProvider(AgentConfig config, string arg)
     {
         if (!Enum.TryParse<AgentProviderKind>(NormalizeProvider(arg), true, out var provider))
         {
-            RhinoApp.WriteLine("Usage: /provider auto|claude|codex");
+            CommandLineUi.Debug("Usage: /provider auto|claude|codex");
             return;
         }
 
         config.Provider = provider;
         AgentConfigStore.Save(config);
-        RhinoApp.WriteLine($"Provider set to {config.Provider}. Restart Agent to switch provider.");
+        CommandLineUi.Debug($"Provider set to {config.Provider}. Restart Agent to switch provider.");
     }
 
     private static void SetProviderProcessMode(AgentConfig config, string arg)
@@ -142,13 +148,13 @@ public static class SlashCommands
 
         if (!Enum.TryParse<AgentProviderProcessMode>(normalized, out var mode))
         {
-            RhinoApp.WriteLine("Usage: /process long|stateless");
+            CommandLineUi.Debug("Usage: /process long|stateless");
             return;
         }
 
         config.ProviderProcessMode = mode;
         AgentConfigStore.Save(config);
-        RhinoApp.WriteLine($"Provider process mode set to {mode}. Restart Agent to switch provider process architecture.");
+        CommandLineUi.Debug($"Provider process mode set to {mode}. Restart Agent to switch provider process architecture.");
     }
 
     private static void SetPermission(AgentConfig config, string arg)
@@ -164,21 +170,22 @@ public static class SlashCommands
 
         if (!Enum.TryParse<AgentPermissionMode>(normalized, out var mode))
         {
-            RhinoApp.WriteLine("Usage: /mode ask|auto|full|plan");
+            CommandLineUi.Debug("Usage: /mode ask|auto|full|plan");
             return;
         }
 
         config.PermissionMode = mode;
         AgentConfigStore.Save(config);
-        RhinoApp.WriteLine($"Permission mode set to {mode}. Restart Agent to switch provider sandbox/permission arguments.");
+        CommandLineUi.Debug($"Permission mode set to {mode}. Restart Agent to switch provider sandbox/permission arguments.");
     }
 
     private static void SetModel(AgentConfig config, string arg)
     {
         if (arg.Length == 0)
         {
-            RhinoApp.WriteLine($"Claude model: {config.ClaudeModel}");
-            RhinoApp.WriteLine($"Codex model: {config.CodexModel}");
+            CommandLineUi.Debug(
+                $"Claude model: {config.ClaudeModel}{Environment.NewLine}" +
+                $"Codex model: {config.CodexModel}");
             return;
         }
 
@@ -188,7 +195,7 @@ public static class SlashCommands
             config.ClaudeModel = arg;
 
         AgentConfigStore.Save(config);
-        RhinoApp.WriteLine($"Model saved: {arg}. Restart Agent to ensure the provider process uses it.");
+        CommandLineUi.Debug($"Model saved: {arg}. Restart Agent to ensure the provider process uses it.");
     }
 
     private static string NormalizeProvider(string arg) => arg.Trim().ToLowerInvariant() switch

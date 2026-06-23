@@ -53,7 +53,7 @@ public sealed class ApprovalService
 
         var option = getter.Option();
         var approved = option?.EnglishName == "Yes";
-        RhinoApp.WriteLine(approved ? "Approved." : "Denied.");
+        CommandLineUi.Debug(approved ? "Approved." : "Denied.");
         return approved;
     }
 }

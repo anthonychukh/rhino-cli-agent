@@ -22,16 +22,17 @@ public static class LoginFlow
 
         if (command is null)
         {
-            RhinoApp.WriteLine($"{provider} CLI was not found on PATH. Install it, or set the executable path in config.json.");
+            CommandLineUi.Debug($"{provider} CLI was not found on PATH. Install it, or set the executable path in config.json.");
             return;
         }
 
-        RhinoApp.WriteLine($"Starting {provider} login in a terminal:");
-        RhinoApp.WriteLine(command.DisplayCommand);
+        CommandLineUi.Debug(
+            $"Starting {provider} login in a terminal:{Environment.NewLine}" +
+            command.DisplayCommand);
         if (TerminalLauncher.Launch(command))
-            RhinoApp.WriteLine("Finish login in the terminal/browser, then run Agent again.");
+            CommandLineUi.Debug("Finish login in the terminal/browser, then run Agent again.");
         else
-            RhinoApp.WriteLine("Could not launch a terminal. Run the command above manually.");
+            CommandLineUi.Debug("Could not launch a terminal. Run the command above manually.");
     }
 
     public static bool TryParseProvider(string value, out AgentProviderKind provider)

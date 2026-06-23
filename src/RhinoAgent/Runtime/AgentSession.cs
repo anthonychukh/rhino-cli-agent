@@ -52,33 +52,37 @@ public sealed class AgentSession
             var prompt = AgentPromptBuilder.Build(_doc, _config, _history, toolResults, _toolHost.DescribeTools());
             diagnostics?.Invoke($"prompt-built: {prompt.Length} chars");
             diagnostics?.Invoke("thinking-write-start");
-            RhinoApp.WriteLine(round == 0 ? "Agent is thinking..." : "Agent is checking tool results...");
-            diagnostics?.Invoke("thinking-write-complete");
-            diagnostics?.Invoke("provider-run-start");
             var lastProgressMessage = "";
-
-            var providerResult = _provider.RunPromptAsync(
-                prompt,
-                progress =>
-                {
-                    diagnostics?.Invoke($"provider-progress: {progress.Message}");
-                    if (!progress.IsTransient
-                        && !string.IsNullOrWhiteSpace(progress.Message)
-                        && !string.Equals(progress.Message, lastProgressMessage, StringComparison.Ordinal))
-                    {
-                        RhinoApp.WriteLine(progress.Message);
-                        lastProgressMessage = progress.Message;
-                    }
-                },
-                cancellationToken).GetAwaiter().GetResult();
+            AgentProviderResult providerResult;
+            using (CommandLineUi.Thinking(round == 0 ? "Agent is thinking" : "Agent is checking tool results"))
+            {
+                diagnostics?.Invoke("thinking-write-complete");
+                diagnostics?.Invoke("provider-run-start");
+                providerResult = _provider.RunPromptAsync(
+                        prompt,
+                        progress =>
+                        {
+                            diagnostics?.Invoke($"provider-progress: {progress.Message}");
+                            if (!progress.IsTransient
+                                && !string.IsNullOrWhiteSpace(progress.Message)
+                                && !string.Equals(progress.Message, lastProgressMessage, StringComparison.Ordinal))
+                            {
+                                CommandLineUi.Debug(progress.Message);
+                                lastProgressMessage = progress.Message;
+                            }
+                        },
+                        cancellationToken)
+                    .GetAwaiter()
+                    .GetResult();
+            }
             diagnostics?.Invoke($"provider-run-complete: {providerResult.ExitCode}");
             lastProviderResult = providerResult;
 
             if (providerResult.ExitCode != 0)
             {
-                RhinoApp.WriteLine($"Provider exited with code {providerResult.ExitCode}.");
+                CommandLineUi.Debug($"Provider exited with code {providerResult.ExitCode}.");
                 if (!string.IsNullOrWhiteSpace(providerResult.StandardError))
-                    RhinoApp.WriteLine(providerResult.StandardError.Trim());
+                    CommandLineUi.Debug(providerResult.StandardError.Trim());
                 return BuildResult(
                     false,
                     providerResult,
@@ -93,7 +97,7 @@ public sealed class AgentSession
             var visible = parsed.VisibleText.Trim();
             if (visible.Length > 0)
             {
-                RhinoApp.WriteLine(visible);
+                CommandLineUi.AgentResponse(visible);
                 visibleTranscript.AppendLine(visible);
             }
 
@@ -118,7 +122,7 @@ public sealed class AgentSession
             {
                 if (!_approvals.ShouldExecute(call, _toolHost, out var reason))
                 {
-                    RhinoApp.WriteLine($"Plan: {call.Tool} {FormatArguments(call.Arguments)}");
+                    CommandLineUi.Debug($"Plan: {call.Tool} {FormatArguments(call.Arguments)}");
                     toolResults.Add(new ToolExecutionResult(call.Tool, false, reason, false, true));
                     continue;
                 }
@@ -129,11 +133,11 @@ public sealed class AgentSession
                     continue;
                 }
 
-                RhinoApp.WriteLine($"Running tool: {call.Tool}");
+                CommandLineUi.Debug($"Running tool: {call.Tool}");
                 var result = await _toolHost.ExecuteAsync(call);
-                RhinoApp.WriteLine(result.Success ? $"Tool complete: {call.Tool}" : $"Tool failed: {call.Tool}");
+                CommandLineUi.Debug(result.Success ? $"Tool complete: {call.Tool}" : $"Tool failed: {call.Tool}");
                 if (!string.IsNullOrWhiteSpace(result.Output))
-                    RhinoApp.WriteLine(TrimForCommandLine(result.Output));
+                    CommandLineUi.Debug(TrimForCommandLine(result.Output));
                 toolResults.Add(result);
                 totalToolResults++;
             }
@@ -141,7 +145,7 @@ public sealed class AgentSession
             _history.Add(("tool", ToolResultFormatter.Format(toolResults)));
         }
 
-        RhinoApp.WriteLine("Agent stopped after the configured tool-round limit. Raise maxToolRounds in config.json if needed.");
+        CommandLineUi.Debug("Agent stopped after the configured tool-round limit. Raise maxToolRounds in config.json if needed.");
         return BuildResult(
             false,
             lastProviderResult,
@@ -175,7 +179,7 @@ public sealed class AgentSession
             parts.Add($"cost ${usage.CostUsd.Value:0.######}");
 
         if (parts.Count > 0)
-            RhinoApp.WriteLine($"Usage: {string.Join(", ", parts)}");
+            CommandLineUi.Debug($"Usage: {string.Join(", ", parts)}");
     }
 
     private static string FormatArguments(Dictionary<string, object?> args) =>

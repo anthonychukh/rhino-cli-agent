@@ -3,6 +3,7 @@ using Rhino;
 using Rhino.Commands;
 using Rhino.Input.Custom;
 using RhinoAgent.Config;
+using RhinoAgent.Runtime;
 
 namespace RhinoAgent.Commands;
 
@@ -43,15 +44,15 @@ public sealed class AgentConfigCommand : Command
             {
                 case "Provider":
                     provider = (AgentProviderKind)option.CurrentListOptionIndex;
-                    RhinoApp.WriteLine($"Provider = {provider}");
+                    CommandLineUi.Debug($"Provider = {provider}");
                     break;
                 case "ProcessMode":
                     processMode = (AgentProviderProcessMode)option.CurrentListOptionIndex;
-                    RhinoApp.WriteLine($"ProcessMode = {processMode}");
+                    CommandLineUi.Debug($"ProcessMode = {processMode}");
                     break;
                 case "PermissionMode":
                     permissions = (AgentPermissionMode)option.CurrentListOptionIndex;
-                    RhinoApp.WriteLine($"PermissionMode = {permissions}");
+                    CommandLineUi.Debug($"PermissionMode = {permissions}");
                     break;
                 case "Show":
                     PrintConfig(config);
@@ -76,17 +77,20 @@ public sealed class AgentConfigCommand : Command
         config.ProviderProcessMode = processMode;
         config.PermissionMode = permissions;
         AgentConfigStore.Save(config);
-        RhinoApp.WriteLine("RhinoAgent config saved.");
+        CommandLineUi.Debug("RhinoAgent config saved.");
     }
 
     private static void PrintConfig(AgentConfig config)
     {
-        RhinoApp.WriteLine($"Config path: {AgentConfigStore.ConfigPath}");
-        RhinoApp.WriteLine($"Provider: {config.Provider}");
-        RhinoApp.WriteLine($"ProcessMode: {config.ProviderProcessMode}");
-        RhinoApp.WriteLine($"PermissionMode: {config.PermissionMode}");
-        RhinoApp.WriteLine($"ClaudeModel: {config.ClaudeModel}");
-        RhinoApp.WriteLine($"CodexModel: {config.CodexModel}");
-        RhinoApp.WriteLine($"WorkingDirectory: {config.WorkingDirectory ?? "(document folder or home)"}");
+        CommandLineUi.Debug(string.Join(Environment.NewLine,
+        [
+            $"Config path: {AgentConfigStore.ConfigPath}",
+            $"Provider: {config.Provider}",
+            $"ProcessMode: {config.ProviderProcessMode}",
+            $"PermissionMode: {config.PermissionMode}",
+            $"ClaudeModel: {config.ClaudeModel}",
+            $"CodexModel: {config.CodexModel}",
+            $"WorkingDirectory: {config.WorkingDirectory ?? "(document folder or home)"}"
+        ]));
     }
 }
