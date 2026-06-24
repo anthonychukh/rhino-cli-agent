@@ -52,6 +52,7 @@ public sealed class AgentSession
         {
             var prompt = AgentPromptBuilder.Build(_doc, _config, _history, toolResults, _toolHost.DescribeTools());
             diagnostics?.Invoke($"prompt-built: {prompt.Length} chars");
+            WritePromptPackageToDebugger(prompt, round, maxRounds);
             diagnostics?.Invoke("thinking-write-start");
             var lastProgressMessage = "";
             AgentProviderResult providerResult;
@@ -207,6 +208,30 @@ public sealed class AgentSession
 
         if (parts.Count > 0)
             CommandLineUi.Usage(string.Join(", ", parts));
+    }
+
+    [System.Diagnostics.Conditional("DEBUG")]
+    private void WritePromptPackageToDebugger(string prompt, int round, int maxRounds)
+    {
+        const int chunkSize = 3000;
+        var chunkCount = Math.Max(1, (int)Math.Ceiling(prompt.Length / (double)chunkSize));
+
+        System.Diagnostics.Debug.WriteLine(
+            $"[RhinoAgent prompt package begin] round={round + 1}/{maxRounds}; provider={_provider.DisplayName}; chars={prompt.Length}; chunks={chunkCount}");
+
+        for (var offset = 0; offset < prompt.Length; offset += chunkSize)
+        {
+            var length = Math.Min(chunkSize, prompt.Length - offset);
+            var chunk = prompt.Substring(offset, length);
+            var chunkNumber = (offset / chunkSize) + 1;
+            System.Diagnostics.Debug.WriteLine($"[RhinoAgent prompt package chunk {chunkNumber}/{chunkCount}]");
+            System.Diagnostics.Debug.WriteLine(chunk);
+        }
+
+        if (prompt.Length == 0)
+            System.Diagnostics.Debug.WriteLine("[RhinoAgent prompt package empty]");
+
+        System.Diagnostics.Debug.WriteLine("[RhinoAgent prompt package end]");
     }
 
     private void Debug(string message)
