@@ -1,3 +1,4 @@
+using System.Text;
 using Rhino;
 
 namespace RhinoAgent.Runtime;
@@ -5,7 +6,7 @@ namespace RhinoAgent.Runtime;
 public static class CommandLineUi
 {
     private const string UserIcon = "▶";
-    private const string DebugIcon = "•";
+    private const string DebugIcon = ".";
     private const string UsageIcon = "$";
     private const string AgentIcon = "◀";
     private const string UserLabel = "You";
@@ -48,7 +49,7 @@ public static class CommandLineUi
     {
         var prefix = $"{icon} {label}: ";
         var continuationPrefix = new string(' ', prefix.Length);
-        var lines = SplitLines(message);
+        var lines = SplitLines(NormalizeForCommandLine(message));
 
         lock (WriteLock)
         {
@@ -77,6 +78,34 @@ public static class CommandLineUi
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n')
             .Split('\n');
+    }
+
+    private static string NormalizeForCommandLine(string value)
+    {
+        StringBuilder? builder = null;
+        for (var i = 0; i < value.Length; i++)
+        {
+            var replacement = value[i] switch
+            {
+                '\u2018' or '\u2019' or '\u201B' => "'",
+                '\u201C' or '\u201D' or '\u201F' => "\"",
+                '\u2013' or '\u2014' or '\u2212' => "-",
+                '\u2026' => "...",
+                '\u00A0' => " ",
+                _ => null
+            };
+
+            if (replacement is null)
+            {
+                builder?.Append(value[i]);
+                continue;
+            }
+
+            builder ??= new StringBuilder(value.Length + 8).Append(value.AsSpan(0, i));
+            builder.Append(replacement);
+        }
+
+        return builder?.ToString() ?? value;
     }
 
     private sealed class ThinkingIndicator : IDisposable
@@ -130,7 +159,7 @@ public static class CommandLineUi
         {
             try
             {
-                RhinoApp.SetCommandPromptMessage(message);
+                RhinoApp.SetCommandPromptMessage(NormalizeForCommandLine(message));
             }
             catch
             {

@@ -6,6 +6,8 @@ namespace RhinoAgent.Providers;
 
 public abstract class ExternalProcessProvider : IAgentProvider
 {
+    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
     private readonly string _executablePath;
     private readonly string _workingDirectory;
 
@@ -42,6 +44,9 @@ public abstract class ExternalProcessProvider : IAgentProvider
         process.StartInfo.RedirectStandardOutput = true;
         process.StartInfo.RedirectStandardError = true;
         process.StartInfo.RedirectStandardInput = true;
+        process.StartInfo.StandardInputEncoding = Utf8NoBom;
+        process.StartInfo.StandardOutputEncoding = Utf8NoBom;
+        process.StartInfo.StandardErrorEncoding = Utf8NoBom;
         process.StartInfo.CreateNoWindow = true;
 
         var stderr = new StringBuilder();
@@ -132,15 +137,16 @@ public abstract class ExternalProcessProvider : IAgentProvider
         var stdoutPath = Path.Combine(tempDir, "stdout.jsonl");
         var stderrPath = Path.Combine(tempDir, "stderr.txt");
         var batchPath = Path.Combine(tempDir, "run-provider.cmd");
-        await File.WriteAllTextAsync(promptPath, prompt, cancellationToken).ConfigureAwait(false);
+        await File.WriteAllTextAsync(promptPath, prompt, Utf8NoBom, cancellationToken).ConfigureAwait(false);
 
         var collector = CreateCollector(progress);
         var args = BuildArguments(prompt).Select(QuoteForCmd);
         var command = $"{QuoteForCmd(_executablePath)} {string.Join(" ", args)} < {QuoteForCmd(promptPath)} > {QuoteForCmd(stdoutPath)} 2> {QuoteForCmd(stderrPath)}";
-        await File.WriteAllTextAsync(Path.Combine(tempDir, "command.txt"), command, cancellationToken).ConfigureAwait(false);
+        await File.WriteAllTextAsync(Path.Combine(tempDir, "command.txt"), command, Utf8NoBom, cancellationToken).ConfigureAwait(false);
         await File.WriteAllTextAsync(
             batchPath,
             $"@echo off\r\ncd /d {QuoteForCmd(GetProcessWorkingDirectory())}\r\n{command}\r\nexit /b %ERRORLEVEL%\r\n",
+            Utf8NoBom,
             cancellationToken).ConfigureAwait(false);
 
         using var process = new Process();
@@ -180,11 +186,13 @@ public abstract class ExternalProcessProvider : IAgentProvider
 
         if (File.Exists(stdoutPath))
         {
-            foreach (var line in File.ReadLines(stdoutPath))
+            foreach (var line in File.ReadLines(stdoutPath, Utf8NoBom))
                 collector.AcceptLine(line);
         }
 
-        var stderr = File.Exists(stderrPath) ? await File.ReadAllTextAsync(stderrPath, cancellationToken).ConfigureAwait(false) : "";
+        var stderr = File.Exists(stderrPath)
+            ? await File.ReadAllTextAsync(stderrPath, Utf8NoBom, cancellationToken).ConfigureAwait(false)
+            : "";
         var exitCode = process.HasExited ? process.ExitCode : 0;
         progress(new AgentProgress($"{DisplayName} cmd wrapper exited: {exitCode}; temp {tempDir}"));
 

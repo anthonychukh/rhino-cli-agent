@@ -6,6 +6,8 @@ namespace RhinoAgent.Providers;
 
 public sealed class CodexAppServerProvider : IAgentProvider
 {
+    private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
@@ -140,6 +142,9 @@ public sealed class CodexAppServerProvider : IAgentProvider
         process.StartInfo.RedirectStandardInput = true;
         process.StartInfo.RedirectStandardOutput = true;
         process.StartInfo.RedirectStandardError = true;
+        process.StartInfo.StandardInputEncoding = Utf8NoBom;
+        process.StartInfo.StandardOutputEncoding = Utf8NoBom;
+        process.StartInfo.StandardErrorEncoding = Utf8NoBom;
         process.StartInfo.CreateNoWindow = true;
 
         progress(new AgentProgress($"Starting {DisplayName}: {_executablePath} app-server --stdio"));
