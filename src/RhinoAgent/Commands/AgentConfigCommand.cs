@@ -92,7 +92,11 @@ public sealed class AgentConfigCommand : Command
             $"UsageMessages: {(config.ShowUsageMessages ? "on" : "off")}",
             $"ClaudeModel: {config.ClaudeModel}",
             $"CodexModel: {config.CodexModel}",
+            $"CodexReasoningEffort: {FormatReasoningEffort(config.CodexReasoningEffort)}",
             $"WorkingDirectory: {config.WorkingDirectory ?? "(document folder or home)"}"
         ]));
     }
+
+    private static string FormatReasoningEffort(string value) =>
+        string.IsNullOrWhiteSpace(value) ? "default" : value;
 }

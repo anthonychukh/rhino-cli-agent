@@ -10,6 +10,8 @@ param(
 
     [switch] $ProviderSelfTest,
 
+    [switch] $PromptSelfTest,
+
     [switch] $ExitAfterSelfTest,
 
     [int] $SelfTestTimeoutSeconds = 45,
@@ -53,6 +55,7 @@ $rhinoArgs.Add("-_LoadPlugin")
 $rhinoArgs.Add((Format-ProcessArgument $plugin))
 $selfTestOutput = Join-Path ([System.IO.Path]::GetTempPath()) "RhinoAgent\self-test.json"
 $providerSelfTestOutput = Join-Path ([System.IO.Path]::GetTempPath()) "RhinoAgent\provider-self-test.json"
+$promptSelfTestOutput = Join-Path ([System.IO.Path]::GetTempPath()) "RhinoAgent\prompt-self-test.json"
 
 if ($WithMcp) {
     $mcpPackage = Join-Path $env:APPDATA "McNeel\Rhinoceros\packages\8.0\rhinomcp"
@@ -84,6 +87,14 @@ if ($ProviderSelfTest) {
     }
 
     $runScriptParts.Add("_AgentProviderSelfTest _Enter")
+}
+
+if ($PromptSelfTest) {
+    if (Test-Path $promptSelfTestOutput) {
+        Remove-Item -LiteralPath $promptSelfTestOutput -Force
+    }
+
+    $runScriptParts.Add("_AgentPromptSelfTest _Enter")
 }
 
 if ($runScriptParts.Count -gt 0) {
@@ -127,7 +138,11 @@ if ($ProviderSelfTest) {
     Wait-RhinoAgentTestOutput -Path $providerSelfTestOutput -Label "Provider self-test"
 }
 
-if (($SelfTest -or $ProviderSelfTest) -and $ExitAfterSelfTest -and -not $process.HasExited) {
+if ($PromptSelfTest) {
+    Wait-RhinoAgentTestOutput -Path $promptSelfTestOutput -Label "Prompt self-test"
+}
+
+if (($SelfTest -or $ProviderSelfTest -or $PromptSelfTest) -and $ExitAfterSelfTest -and -not $process.HasExited) {
     $null = $process.CloseMainWindow()
     Start-Sleep -Seconds 3
     if (-not $process.HasExited) {

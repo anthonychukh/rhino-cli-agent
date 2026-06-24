@@ -89,7 +89,19 @@ public sealed class AgentCommand : Command
     {
         try
         {
-            session.RunUserTurnAsync(input).GetAwaiter().GetResult();
+            var timeoutSeconds = Math.Max(0, AgentConfigStore.Load().ProviderTurnTimeoutSeconds);
+            using var cancellation = timeoutSeconds > 0
+                ? new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds))
+                : new CancellationTokenSource();
+
+            session.RunUserTurnAsync(input, cancellation.Token).GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException)
+        {
+            var timeoutSeconds = Math.Max(0, AgentConfigStore.Load().ProviderTurnTimeoutSeconds);
+            CommandLineUi.Debug(timeoutSeconds > 0
+                ? $"Agent turn timed out after {timeoutSeconds} seconds. Use /timeout <seconds> to adjust or /timeout off to disable."
+                : "Agent turn was canceled.");
         }
         catch (Exception ex)
         {

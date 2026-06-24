@@ -13,6 +13,7 @@ public sealed class CodexAppServerProvider : IAgentProvider
 
     private readonly string _executablePath;
     private readonly string _model;
+    private readonly string _reasoningEffort;
     private readonly AgentPermissionMode _permissionMode;
     private readonly string _workingDirectory;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -22,10 +23,11 @@ public sealed class CodexAppServerProvider : IAgentProvider
     private bool _initialized;
     private bool _disposed;
 
-    public CodexAppServerProvider(string executablePath, string model, AgentPermissionMode permissionMode, string workingDirectory)
+    public CodexAppServerProvider(string executablePath, string model, string reasoningEffort, AgentPermissionMode permissionMode, string workingDirectory)
     {
         _executablePath = executablePath;
         _model = model;
+        _reasoningEffort = NormalizeReasoningEffort(reasoningEffort);
         _permissionMode = permissionMode;
         _workingDirectory = Directory.Exists(workingDirectory)
             ? workingDirectory
@@ -33,7 +35,7 @@ public sealed class CodexAppServerProvider : IAgentProvider
     }
 
     public AgentProviderKind Kind => AgentProviderKind.Codex;
-    public string DisplayName => $"Codex app-server ({_model}, {_permissionMode}, long-running)";
+    public string DisplayName => $"Codex app-server ({_model}, {_permissionMode}, effort {FormatReasoningEffort(_reasoningEffort)}, long-running)";
     public AgentProviderProcessMode ProcessMode => AgentProviderProcessMode.LongRunning;
 
     public async Task<AgentProviderResult> RunPromptAsync(
@@ -166,7 +168,8 @@ public sealed class CodexAppServerProvider : IAgentProvider
                 config = (object?)null,
                 serviceName = (string?)null,
                 baseInstructions = "You are RhinoAgent's long-running Codex app-server provider. Follow each user message exactly.",
-                developerInstructions = (string?)null,
+                developerInstructions =
+                    "RhinoAgent handles tools itself through hidden <rhino-agent> JSON blocks. Do not call native app-server tools, shell commands, file tools, web search, MCP tools, or user-input tools. Keep turns fast and emit the requested hidden block as soon as an action is needed.",
                 personality = (object?)null,
                 ephemeral = true,
                 sessionStartSource = "startup",
@@ -222,8 +225,8 @@ public sealed class CodexAppServerProvider : IAgentProvider
                 approvalsReviewer = "user",
                 sandboxPolicy = BuildTurnSandboxPolicy(_permissionMode),
                 model = _model,
-                effort = (string?)null,
-                summary = (object?)null,
+                effort = string.IsNullOrWhiteSpace(_reasoningEffort) ? null : _reasoningEffort,
+                summary = "none",
                 personality = (object?)null,
                 outputSchema = (object?)null
             }
@@ -248,6 +251,9 @@ public sealed class CodexAppServerProvider : IAgentProvider
 
                 continue;
             }
+
+            if (await TryHandleServerRequestAsync(root, progress, cancellationToken).ConfigureAwait(false))
+                continue;
 
             var method = ReadString(root, "method");
             if (string.IsNullOrWhiteSpace(method))
@@ -302,11 +308,92 @@ public sealed class CodexAppServerProvider : IAgentProvider
                 return doc;
             }
 
+            if (await TryHandleServerRequestAsync(root, progress, cancellationToken).ConfigureAwait(false))
+            {
+                doc.Dispose();
+                continue;
+            }
+
             var method = ReadString(root, "method");
             if (!string.IsNullOrWhiteSpace(method))
                 ReportProgress(method!, root, progress);
 
             doc.Dispose();
+        }
+    }
+
+    private async Task<bool> TryHandleServerRequestAsync(
+        JsonElement root,
+        Action<AgentProgress> progress,
+        CancellationToken cancellationToken)
+    {
+        if (!root.TryGetProperty("id", out var idElement)
+            || !root.TryGetProperty("method", out var methodElement)
+            || methodElement.ValueKind != JsonValueKind.String)
+            return false;
+
+        var method = methodElement.GetString();
+        if (string.IsNullOrWhiteSpace(method))
+            return false;
+
+        var requestId = ReadRequestId(idElement);
+        switch (method)
+        {
+            case "item/tool/call":
+                progress(new AgentProgress("Codex app-server requested a native dynamic tool; returning unsupported so RhinoAgent tools stay in control."));
+                await SendResultAsync(requestId, new
+                {
+                    success = false,
+                    contentItems = new[]
+                    {
+                        new
+                        {
+                            type = "inputText",
+                            text = "RhinoAgent does not support native Codex app-server tools in this mode. Use the hidden <rhino-agent> tool protocol and available RhinoAgent tools such as fetch_url and execute_csharp."
+                        }
+                    }
+                }, cancellationToken).ConfigureAwait(false);
+                return true;
+
+            case "item/commandExecution/requestApproval":
+                progress(new AgentProgress("Codex app-server requested native command execution; declined. RhinoAgent executes only hidden RhinoAgent tool blocks."));
+                await SendResultAsync(requestId, new { decision = "decline" }, cancellationToken).ConfigureAwait(false);
+                return true;
+
+            case "item/fileChange/requestApproval":
+                progress(new AgentProgress("Codex app-server requested native file changes; declined. RhinoAgent executes only hidden RhinoAgent tool blocks."));
+                await SendResultAsync(requestId, new { decision = "decline" }, cancellationToken).ConfigureAwait(false);
+                return true;
+
+            case "item/permissions/requestApproval":
+                progress(new AgentProgress("Codex app-server requested extra native permissions; returning an empty turn-scoped grant."));
+                await SendResultAsync(requestId, new
+                {
+                    permissions = new
+                    {
+                        fileSystem = (object?)null,
+                        network = (object?)null
+                    },
+                    scope = "turn",
+                    strictAutoReview = true
+                }, cancellationToken).ConfigureAwait(false);
+                return true;
+
+            case "item/tool/requestUserInput":
+                progress(new AgentProgress("Codex app-server requested user input; returning no answers so the turn can continue."));
+                await SendResultAsync(requestId, new { answers = new Dictionary<string, object>() }, cancellationToken).ConfigureAwait(false);
+                return true;
+
+            case "applyPatchApproval":
+            case "execCommandApproval":
+                progress(new AgentProgress($"Codex app-server requested legacy approval {method}; denied."));
+                await SendResultAsync(requestId, new { decision = "denied" }, cancellationToken).ConfigureAwait(false);
+                return true;
+
+            default:
+                progress(new AgentProgress($"Codex app-server request unsupported: {method}"));
+                await SendErrorAsync(requestId, -32601, $"RhinoAgent does not implement app-server request '{method}'.", cancellationToken).ConfigureAwait(false);
+                return true;
         }
     }
 
@@ -317,6 +404,20 @@ public sealed class CodexAppServerProvider : IAgentProvider
         await process.StandardInput.WriteLineAsync(json.AsMemory(), cancellationToken).ConfigureAwait(false);
         await process.StandardInput.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
+
+    private Task SendResultAsync(object? requestId, object result, CancellationToken cancellationToken) =>
+        SendAsync(new { id = requestId, result }, cancellationToken);
+
+    private Task SendErrorAsync(object? requestId, int code, string message, CancellationToken cancellationToken) =>
+        SendAsync(new
+        {
+            id = requestId,
+            error = new
+            {
+                code,
+                message
+            }
+        }, cancellationToken);
 
     private async Task<JsonDocument> ReadMessageAsync(CancellationToken cancellationToken)
     {
@@ -513,6 +614,14 @@ public sealed class CodexAppServerProvider : IAgentProvider
             ? value.GetString()
             : null;
 
+    private static object? ReadRequestId(JsonElement idElement) => idElement.ValueKind switch
+    {
+        JsonValueKind.String => idElement.GetString(),
+        JsonValueKind.Number when idElement.TryGetInt64(out var value) => value,
+        JsonValueKind.Null => null,
+        _ => idElement.GetRawText()
+    };
+
     private void AppendStderr(string value)
     {
         lock (_stderr)
@@ -537,4 +646,21 @@ public sealed class CodexAppServerProvider : IAgentProvider
 
     private static string FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? "";
+
+    private static string NormalizeReasoningEffort(string? value)
+    {
+        var normalized = value?.Trim().ToLowerInvariant() ?? "";
+        return normalized switch
+        {
+            "" or "off" or "default" or "none" => "",
+            "low" or "medium" or "high" => normalized,
+            "minimal" or "min" => "low",
+            "med" => "medium",
+            "max" => "high",
+            _ => "low"
+        };
+    }
+
+    private static string FormatReasoningEffort(string value) =>
+        string.IsNullOrWhiteSpace(value) ? "default" : value;
 }

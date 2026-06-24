@@ -4,6 +4,8 @@ namespace RhinoAgent.Runtime;
 
 public static class ToolResultFormatter
 {
+    private const int MaxOutputChars = 3000;
+
     public static string Format(IEnumerable<ToolExecutionResult> results)
     {
         var sb = new StringBuilder();
@@ -14,7 +16,7 @@ public static class ToolResultFormatter
             sb.AppendLine($"  approved: {result.WasApproved}");
             sb.AppendLine($"  skipped: {result.WasSkipped}");
             sb.AppendLine("  output:");
-            sb.AppendLine(Indent(result.Output));
+            sb.AppendLine(Indent(TrimOutput(result.Output)));
         }
 
         return sb.ToString();
@@ -25,5 +27,13 @@ public static class ToolResultFormatter
         if (string.IsNullOrEmpty(value))
             return "    (empty)";
         return string.Join(Environment.NewLine, value.Split(["\r\n", "\n"], StringSplitOptions.None).Select(line => "    " + line));
+    }
+
+    private static string TrimOutput(string value)
+    {
+        if (value.Length <= MaxOutputChars)
+            return value;
+
+        return value[..MaxOutputChars] + Environment.NewLine + $"... truncated {value.Length - MaxOutputChars} characters";
     }
 }

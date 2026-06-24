@@ -103,8 +103,10 @@ Slash commands inside `Agent`:
 - `/provider auto|claude|codex`
 - `/process long|stateless`
 - `/model <model>`
+- `/effort low|medium|high|off`
 - `/mode ask|auto|full|plan`
 - `/debug on|off`
+- `/timeout <seconds>|off`
 - `/run <rhino command>`
 - `! <rhino command or alias>`
 - `_Command`, `-Command`, `.Command`, known Rhino command names, or aliases for native passthrough
@@ -121,7 +123,7 @@ Slash commands inside `Agent`:
 - `full`: execute all RhinoAgent tool calls without prompting.
 - `plan`: show intended tool calls without executing them.
 
-`/debug off` hides provider progress and tool execution debug messages inside the active `Agent` session. `/usage off` hides the separate usage message line after provider turns.
+`/debug off` hides provider progress and tool execution debug messages inside the active `Agent` session. `/usage off` hides the separate usage message line after provider turns. `/effort` controls Codex app-server reasoning effort for new `Agent` sessions; `off` leaves effort unset so Codex uses its provider default.
 
 Exact token and cost usage are only displayed when the provider CLI emits exact usage. RhinoAgent does not estimate usage.
 
@@ -132,7 +134,7 @@ Exact token and cost usage are only displayed when the provider CLI emits exact 
 
 `long` is the default process mode. Claude Code currently keeps the existing print-mode provider path; the long-running app-server implementation is Codex-specific.
 
-Changing `/process` or `/mode` saves config immediately, but restart `Agent` to switch the provider process architecture or provider-level sandbox settings for the already-created provider object.
+Changing `/process`, `/mode`, `/model`, or `/effort` saves config immediately, but restart `Agent` to switch the provider process architecture, provider-level sandbox settings, model, or Codex reasoning effort for the already-created provider object.
 
 ## Tool Surface
 
@@ -173,10 +175,12 @@ Example:
   "providerProcessMode": "LongRunning",
   "claudeModel": "claude-opus-4-8",
   "codexModel": "gpt-5.5",
+  "codexReasoningEffort": "low",
   "claudePath": null,
   "codexPath": null,
   "workingDirectory": null,
   "maxToolRounds": 4,
+  "providerTurnTimeoutSeconds": 180,
   "showDebugMessages": true,
   "showUsageMessages": true
 }

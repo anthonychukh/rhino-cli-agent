@@ -93,7 +93,8 @@ public sealed class AgentSelfTestCommand : Command
                 "AgentStatus",
                 "AgentConfig",
                 "AgentSelfTest",
-                "AgentProviderSelfTest"
+                "AgentProviderSelfTest",
+                "AgentPromptSelfTest"
             },
             registeredCommands
         };

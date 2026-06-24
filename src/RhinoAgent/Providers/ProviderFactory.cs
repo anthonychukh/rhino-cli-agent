@@ -64,7 +64,7 @@ public sealed class ProviderFactory
         return provider switch
         {
             AgentProviderKind.Codex when _config.ProviderProcessMode == AgentProviderProcessMode.LongRunning =>
-                new CodexAppServerProvider(executablePath, _config.CodexModel, _config.PermissionMode, cwd),
+                new CodexAppServerProvider(executablePath, _config.CodexModel, _config.CodexReasoningEffort, _config.PermissionMode, cwd),
             AgentProviderKind.Codex => new CodexCliProvider(executablePath, _config.CodexModel, _config.PermissionMode, cwd),
             _ => new ClaudeCliProvider(executablePath, _config.ClaudeModel, _config.PermissionMode, cwd)
         };

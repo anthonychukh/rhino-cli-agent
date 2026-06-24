@@ -30,10 +30,12 @@ public sealed class AgentConfig
     public AgentProviderProcessMode ProviderProcessMode { get; set; } = AgentProviderProcessMode.LongRunning;
     public string ClaudeModel { get; set; } = "claude-opus-4-8";
     public string CodexModel { get; set; } = "gpt-5.5";
+    public string CodexReasoningEffort { get; set; } = "low";
     public string? ClaudePath { get; set; }
     public string? CodexPath { get; set; }
     public string? WorkingDirectory { get; set; }
     public int MaxToolRounds { get; set; } = 4;
+    public int ProviderTurnTimeoutSeconds { get; set; } = 180;
     public bool ShowDebugMessages { get; set; } = true;
     public bool ShowUsageMessages { get; set; } = true;
 }

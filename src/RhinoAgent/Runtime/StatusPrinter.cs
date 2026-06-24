@@ -16,7 +16,8 @@ public static class StatusPrinter
             $"  Debug messages: {(config.ShowDebugMessages ? "on" : "off")}",
             $"  Usage messages: {(config.ShowUsageMessages ? "on" : "off")}",
             $"  Claude model: {config.ClaudeModel}",
-            $"  Codex model: {config.CodexModel}"
+            $"  Codex model: {config.CodexModel}",
+            $"  Codex effort: {FormatReasoningEffort(config.CodexReasoningEffort)}"
         };
 
         foreach (var status in services.ProviderFactory.GetProviderStatuses())
@@ -32,4 +33,7 @@ public static class StatusPrinter
 
         CommandLineUi.Debug(string.Join(Environment.NewLine, lines));
     }
+
+    private static string FormatReasoningEffort(string value) =>
+        string.IsNullOrWhiteSpace(value) ? "default" : value;
 }

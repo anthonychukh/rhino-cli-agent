@@ -47,7 +47,8 @@ public sealed class AgentSession
         var totalToolResults = 0;
         AgentProviderResult? lastProviderResult = null;
 
-        for (var round = 0; round < Math.Max(1, _config.MaxToolRounds); round++)
+        var maxRounds = Math.Max(1, _config.MaxToolRounds);
+        for (var round = 0; round < maxRounds; round++)
         {
             var prompt = AgentPromptBuilder.Build(_doc, _config, _history, toolResults, _toolHost.DescribeTools());
             diagnostics?.Invoke($"prompt-built: {prompt.Length} chars");
@@ -78,6 +79,7 @@ public sealed class AgentSession
                     .GetResult();
             }
             diagnostics?.Invoke($"provider-run-complete: {providerResult.ExitCode}");
+            diagnostics?.Invoke($"provider-text: {providerResult.Text.Length} chars");
             lastProviderResult = providerResult;
 
             if (providerResult.ExitCode != 0)
@@ -97,9 +99,12 @@ public sealed class AgentSession
 
             var parsed = AgentResponseParser.Parse(providerResult.Text);
             var visible = parsed.VisibleText.Trim();
+            diagnostics?.Invoke($"response-parsed: visible={visible.Length} chars; tool_calls={parsed.ToolCalls.Count}");
             if (visible.Length > 0)
             {
-                CommandLineUi.AgentResponse(visible);
+                diagnostics?.Invoke("visible-write-start");
+                CommandLineUi.AgentResponse(TrimForCommandLine(visible));
+                diagnostics?.Invoke("visible-write-complete");
                 visibleTranscript.AppendLine(visible);
             }
 
@@ -109,6 +114,7 @@ public sealed class AgentSession
 
             if (parsed.ToolCalls.Count == 0)
             {
+                diagnostics?.Invoke("turn-complete-no-tools");
                 return BuildResult(
                     true,
                     providerResult,
@@ -122,16 +128,19 @@ public sealed class AgentSession
             toolResults.Clear();
             foreach (var call in parsed.ToolCalls)
             {
+                diagnostics?.Invoke($"tool-start: {call.Tool}");
                 if (!_approvals.ShouldExecute(call, _toolHost, out var reason))
                 {
                     Debug($"Plan: {call.Tool} {FormatArguments(call.Arguments)}");
                     toolResults.Add(new ToolExecutionResult(call.Tool, false, reason, false, true));
+                    diagnostics?.Invoke($"tool-skipped: {call.Tool}");
                     continue;
                 }
 
                 if (_approvals.RequiresPrompt(call, _toolHost) && !_approvals.PromptForApproval(call))
                 {
                     toolResults.Add(new ToolExecutionResult(call.Tool, false, "User denied tool call.", false, true));
+                    diagnostics?.Invoke($"tool-denied: {call.Tool}");
                     continue;
                 }
 
@@ -142,9 +151,22 @@ public sealed class AgentSession
                     Debug(TrimForCommandLine(result.Output));
                 toolResults.Add(result);
                 totalToolResults++;
+                diagnostics?.Invoke($"tool-complete: {call.Tool}; success={result.Success}; output={result.Output.Length} chars");
             }
 
-            _history.Add(("tool", ToolResultFormatter.Format(toolResults)));
+            diagnostics?.Invoke($"tool-round-complete: {toolResults.Count} results");
+            if (round == maxRounds - 1 && CompletedActionTool(toolResults))
+            {
+                diagnostics?.Invoke("turn-complete-final-tool-success");
+                return BuildResult(
+                    true,
+                    providerResult,
+                    visibleTranscript,
+                    totalToolCalls,
+                    totalToolResults,
+                    false,
+                    null);
+            }
         }
 
         Debug("Agent stopped after the configured tool-round limit. Raise maxToolRounds in config.json if needed.");
@@ -207,6 +229,15 @@ public sealed class AgentSession
         builder.Append($"... truncated {value.Length - max} characters");
         return builder.ToString();
     }
+
+    private static bool CompletedActionTool(IEnumerable<ToolExecutionResult> results) =>
+        results.Any(result => result.Success && IsActionTool(result.Tool));
+
+    private static bool IsActionTool(string tool) =>
+        tool.Equals("execute_csharp", StringComparison.OrdinalIgnoreCase)
+        || tool.Equals("run_command", StringComparison.OrdinalIgnoreCase)
+        || tool.Equals("run_python", StringComparison.OrdinalIgnoreCase)
+        || tool.Equals("write_file", StringComparison.OrdinalIgnoreCase);
 
     private AgentTurnResult BuildResult(
         bool success,

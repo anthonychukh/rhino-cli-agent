@@ -55,6 +55,10 @@ public static class SlashCommands
             case "/model":
                 SetModel(config, arg);
                 return SlashCommandResult.Handled;
+            case "/effort":
+            case "/reasoning":
+                SetReasoningEffort(config, arg);
+                return SlashCommandResult.Handled;
             case "/provider":
                 SetProvider(config, arg);
                 return SlashCommandResult.Handled;
@@ -77,6 +81,9 @@ public static class SlashCommands
             case "/tokens":
             case "/usage":
                 SetUsageMessages(config, arg);
+                return SlashCommandResult.Handled;
+            case "/timeout":
+                SetProviderTimeout(config, arg);
                 return SlashCommandResult.Handled;
             case "/compact":
                 CommandLineUi.Debug("Compaction is not needed yet. This V0 keeps only the recent in-memory turns and does not persist sessions.");
@@ -101,8 +108,10 @@ public static class SlashCommands
             "  /provider [auto|claude|codex]",
             "  /process [long|stateless]",
             "  /model [model]            Set active provider model",
+            "  /effort low|medium|high|off",
             "  /mode ask|auto|full|plan",
             "  /debug on|off            Show or hide debug progress/tool messages",
+            "  /timeout <seconds>|off   Limit a provider turn so Agent does not wait forever",
             "  /run <command>            Run a Rhino command manually while in Agent",
             "  ! <command>               Pass a command or alias directly to Rhino",
             "  _Command / -Command       Native Rhino command passthrough",
@@ -122,10 +131,12 @@ public static class SlashCommands
             $"Provider: {config.Provider}",
             $"Provider process: {config.ProviderProcessMode}",
             $"PermissionMode: {config.PermissionMode}",
+            $"Provider timeout: {FormatTimeout(config.ProviderTurnTimeoutSeconds)}",
             $"Debug messages: {(config.ShowDebugMessages ? "on" : "off")}",
             $"Usage messages: {(config.ShowUsageMessages ? "on" : "off")}",
             $"Claude model: {config.ClaudeModel}",
             $"Codex model: {config.CodexModel}",
+            $"Codex effort: {FormatReasoningEffort(config.CodexReasoningEffort)}",
             $"Working directory: {config.WorkingDirectory ?? "(document folder or home)"}"
         ]));
     }
@@ -233,6 +244,58 @@ public static class SlashCommands
         CommandLineUi.Debug($"Model saved: {arg}. Restart Agent to ensure the provider process uses it.");
     }
 
+    private static void SetProviderTimeout(AgentConfig config, string arg)
+    {
+        if (string.IsNullOrWhiteSpace(arg))
+        {
+            CommandLineUi.Debug($"Provider timeout: {FormatTimeout(config.ProviderTurnTimeoutSeconds)}. Usage: /timeout <seconds>|off");
+            return;
+        }
+
+        if (arg.Equals("off", StringComparison.OrdinalIgnoreCase)
+            || arg.Equals("disable", StringComparison.OrdinalIgnoreCase)
+            || arg.Equals("disabled", StringComparison.OrdinalIgnoreCase)
+            || arg.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            config.ProviderTurnTimeoutSeconds = 0;
+            AgentConfigStore.Save(config);
+            CommandLineUi.Debug("Provider timeout disabled.");
+            return;
+        }
+
+        if (!int.TryParse(arg, out var seconds) || seconds < 15)
+        {
+            CommandLineUi.Debug("Usage: /timeout <seconds>|off. Minimum timeout is 15 seconds.");
+            return;
+        }
+
+        config.ProviderTurnTimeoutSeconds = seconds;
+        AgentConfigStore.Save(config);
+        CommandLineUi.Debug($"Provider timeout set to {seconds} seconds.");
+    }
+
+    private static void SetReasoningEffort(AgentConfig config, string arg)
+    {
+        if (string.IsNullOrWhiteSpace(arg))
+        {
+            CommandLineUi.Debug($"Codex reasoning effort: {FormatReasoningEffort(config.CodexReasoningEffort)}. Usage: /effort low|medium|high|off");
+            return;
+        }
+
+        var normalized = NormalizeReasoningEffort(arg);
+        if (normalized is null)
+        {
+            CommandLineUi.Debug("Usage: /effort low|medium|high|off");
+            return;
+        }
+
+        config.CodexReasoningEffort = normalized;
+        AgentConfigStore.Save(config);
+        CommandLineUi.Debug(
+            $"Codex reasoning effort set to {FormatReasoningEffort(normalized)}. " +
+            "Restart Agent to ensure the active Codex provider process uses it.");
+    }
+
     private static string NormalizeProvider(string arg) => arg.Trim().ToLowerInvariant() switch
     {
         "" => "",
@@ -262,4 +325,22 @@ public static class SlashCommands
                 return false;
         }
     }
+
+    private static string FormatTimeout(int seconds) =>
+        seconds > 0 ? $"{seconds} seconds" : "off";
+
+    private static string? NormalizeReasoningEffort(string value)
+    {
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "low" or "minimal" or "min" => "low",
+            "medium" or "med" => "medium",
+            "high" or "max" => "high",
+            "off" or "default" or "none" => "",
+            _ => null
+        };
+    }
+
+    private static string FormatReasoningEffort(string value) =>
+        string.IsNullOrWhiteSpace(value) ? "default" : value;
 }

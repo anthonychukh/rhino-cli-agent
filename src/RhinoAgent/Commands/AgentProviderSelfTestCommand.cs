@@ -143,6 +143,7 @@ public sealed class AgentProviderSelfTestCommand : Command
             ProviderProcessMode = source.ProviderProcessMode,
             ClaudeModel = source.ClaudeModel,
             CodexModel = source.CodexModel,
+            CodexReasoningEffort = source.CodexReasoningEffort,
             ClaudePath = source.ClaudePath,
             CodexPath = source.CodexPath,
             WorkingDirectory = source.WorkingDirectory,
