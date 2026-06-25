@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using RhinoAgent.Config;
 
 namespace RhinoAgent.Providers;
 
@@ -16,12 +17,13 @@ public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationRe
 
     public override AgentProviderKind Kind => AgentProviderKind.Claude;
     public override string DisplayName => $"Claude Code ({Model}, {PermissionMode}, persistent)";
-    public string? ActiveSessionId => _sessionId;
+    public string? ActiveSessionId => _sessionId ?? ClaudeSessionStore.LoadForWorkingDirectory(WorkingDirectory)?.SessionId;
 
     public bool TryContinueLatestConversation(out string message)
     {
         _resumeSessionId = null;
         _continueLatestConversation = true;
+        ClaudeSessionStore.AllowDefaultContinue(WorkingDirectory);
         message = "Claude will continue the most recent saved conversation in this working directory on the next prompt.";
         return true;
     }
@@ -37,6 +39,7 @@ public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationRe
 
         _resumeSessionId = sessionId;
         _continueLatestConversation = false;
+        ClaudeSessionStore.AllowDefaultContinue(WorkingDirectory);
         message = $"Claude will resume session {sessionId} on the next prompt.";
         return true;
     }
@@ -54,6 +57,7 @@ public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationRe
             "--permission-mode", MapPermissionMode(PermissionMode)
         };
 
+        var savedSession = ClaudeSessionStore.LoadForWorkingDirectory(WorkingDirectory);
         if (!string.IsNullOrWhiteSpace(_resumeSessionId))
         {
             args.Add("--resume");
@@ -67,6 +71,15 @@ public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationRe
         {
             args.Add("--resume");
             args.Add(_sessionId);
+        }
+        else if (!string.IsNullOrWhiteSpace(savedSession?.SessionId))
+        {
+            args.Add("--resume");
+            args.Add(savedSession.SessionId);
+        }
+        else if (!ClaudeSessionStore.ShouldStartFresh(WorkingDirectory))
+        {
+            args.Add("--continue");
         }
 
         return args;
@@ -84,6 +97,9 @@ public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationRe
         else if (result.ExitCode == 0 && !string.IsNullOrWhiteSpace(requestedSessionId))
             _sessionId = requestedSessionId;
 
+        if (result.ExitCode == 0 && !string.IsNullOrWhiteSpace(_sessionId))
+            ClaudeSessionStore.SaveWorkingDirectorySession(WorkingDirectory, _sessionId, result.Model ?? Model);
+
         _resumeSessionId = null;
         _continueLatestConversation = false;
     }
@@ -93,6 +109,7 @@ public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationRe
         _sessionId = null;
         _resumeSessionId = null;
         _continueLatestConversation = false;
+        ClaudeSessionStore.ClearWorkingDirectory(WorkingDirectory);
     }
 
     private static string MapPermissionMode(AgentPermissionMode mode) => mode switch

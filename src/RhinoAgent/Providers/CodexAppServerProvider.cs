@@ -1,10 +1,11 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using RhinoAgent.Config;
 
 namespace RhinoAgent.Providers;
 
-public sealed class CodexAppServerProvider : IAgentProvider
+public sealed class CodexAppServerProvider : IAgentProvider, IConversationResumeProvider
 {
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
@@ -22,6 +23,7 @@ public sealed class CodexAppServerProvider : IAgentProvider
     private readonly StringBuilder _stderr = new();
     private Process? _process;
     private string? _threadId;
+    private string? _requestedResumeThreadId;
     private bool _initialized;
     private bool _disposed;
 
@@ -39,6 +41,7 @@ public sealed class CodexAppServerProvider : IAgentProvider
     public AgentProviderKind Kind => AgentProviderKind.Codex;
     public string DisplayName => $"Codex app-server ({_model}, {_permissionMode}, effort {FormatReasoningEffort(_reasoningEffort)}, long-running)";
     public AgentProviderProcessMode ProcessMode => AgentProviderProcessMode.LongRunning;
+    public string? ActiveSessionId => _threadId ?? CodexSessionStore.LoadForWorkingDirectory(_workingDirectory)?.ThreadId;
 
     public async Task<AgentProviderResult> RunPromptAsync(
         string prompt,
@@ -67,7 +70,42 @@ public sealed class CodexAppServerProvider : IAgentProvider
         }
     }
 
-    public void Reset() => _threadId = null;
+    public bool TryContinueLatestConversation(out string message)
+    {
+        var saved = CodexSessionStore.LoadForWorkingDirectory(_workingDirectory);
+        if (saved is null)
+        {
+            message = "No saved Codex conversation was found for this working directory. The next prompt will start a fresh Codex thread.";
+            return false;
+        }
+
+        _threadId = null;
+        _requestedResumeThreadId = saved.ThreadId;
+        message = $"Codex will resume saved thread {saved.ThreadId} on the next prompt.";
+        return true;
+    }
+
+    public bool TryResumeConversation(string sessionId, out string message)
+    {
+        sessionId = sessionId.Trim();
+        if (sessionId.Length == 0)
+        {
+            message = "Usage: /resume latest|<codex-thread-id>";
+            return false;
+        }
+
+        _threadId = null;
+        _requestedResumeThreadId = sessionId;
+        message = $"Codex will resume thread {sessionId} on the next prompt.";
+        return true;
+    }
+
+    public void Reset()
+    {
+        _threadId = null;
+        _requestedResumeThreadId = null;
+        CodexSessionStore.ClearWorkingDirectory(_workingDirectory);
+    }
 
     public void Dispose()
     {
@@ -124,7 +162,7 @@ public sealed class CodexAppServerProvider : IAgentProvider
         }
 
         if (string.IsNullOrWhiteSpace(_threadId))
-            await StartThreadAsync(progress, cancellationToken).ConfigureAwait(false);
+            await ResumeOrStartThreadAsync(progress, cancellationToken).ConfigureAwait(false);
     }
 
     private void StartProcess(Action<AgentProgress> progress)
@@ -154,6 +192,78 @@ public sealed class CodexAppServerProvider : IAgentProvider
         progress(new AgentProgress($"{DisplayName} process started: pid {process.Id}."));
     }
 
+    private async Task ResumeOrStartThreadAsync(Action<AgentProgress> progress, CancellationToken cancellationToken)
+    {
+        var saved = CodexSessionStore.LoadForWorkingDirectory(_workingDirectory);
+        var resumeThreadId = FirstNonEmpty(
+            _requestedResumeThreadId,
+            saved?.ThreadId);
+
+        if (!string.IsNullOrWhiteSpace(resumeThreadId)
+            && await TryResumeThreadAsync(resumeThreadId, progress, cancellationToken).ConfigureAwait(false))
+        {
+            _requestedResumeThreadId = null;
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(saved?.ThreadId)
+            && string.Equals(resumeThreadId, saved.ThreadId, StringComparison.Ordinal))
+        {
+            CodexSessionStore.ClearWorkingDirectory(_workingDirectory);
+        }
+
+        _requestedResumeThreadId = null;
+        await StartThreadAsync(progress, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<bool> TryResumeThreadAsync(
+        string threadId,
+        Action<AgentProgress> progress,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var requestId = Guid.NewGuid().ToString();
+            await SendAsync(new
+            {
+                id = requestId,
+                method = "thread/resume",
+                @params = new
+                {
+                    threadId,
+                    model = _model,
+                    modelProvider = (string?)null,
+                    cwd = _workingDirectory,
+                    approvalPolicy = MapApprovalPolicy(_permissionMode),
+                    approvalsReviewer = "user",
+                    sandbox = MapSandbox(_permissionMode),
+                    config = (object?)null,
+                    baseInstructions = BuildBaseInstructions(),
+                    developerInstructions = BuildDeveloperInstructions(),
+                    personality = (object?)null,
+                    serviceTier = (string?)null
+                }
+            }, cancellationToken).ConfigureAwait(false);
+
+            using var response = await WaitForResponseAsync(requestId, progress, cancellationToken).ConfigureAwait(false);
+            if (TryReadThreadId(response.RootElement, out var resumedThreadId))
+            {
+                _threadId = resumedThreadId;
+                CodexSessionStore.SaveWorkingDirectoryThread(_workingDirectory, _threadId, _model);
+                progress(new AgentProgress($"Codex app-server thread resumed: {_threadId}"));
+                return true;
+            }
+
+            progress(new AgentProgress($"Codex app-server thread/resume did not return a thread id for {threadId}; starting fresh."));
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            progress(new AgentProgress($"Could not resume Codex thread {threadId}: {ex.Message}. Starting fresh."));
+            return false;
+        }
+    }
+
     private async Task StartThreadAsync(Action<AgentProgress> progress, CancellationToken cancellationToken)
     {
         var requestId = Guid.NewGuid().ToString();
@@ -172,22 +282,19 @@ public sealed class CodexAppServerProvider : IAgentProvider
                 sandbox = MapSandbox(_permissionMode),
                 config = (object?)null,
                 serviceName = (string?)null,
-                baseInstructions = "You are RhinoAgent's long-running Codex app-server provider. Follow each user message exactly.",
-                developerInstructions =
-                    "RhinoAgent handles tools itself through hidden <rhino-agent> JSON blocks. Do not call native app-server tools, shell commands, file tools, web search, MCP tools, or user-input tools. Keep turns fast and emit the requested hidden block as soon as an action is needed.",
+                baseInstructions = BuildBaseInstructions(),
+                developerInstructions = BuildDeveloperInstructions(),
                 personality = (object?)null,
-                ephemeral = true,
+                ephemeral = false,
                 sessionStartSource = "startup",
-                threadSource = (string?)null
+                threadSource = "rhinoAgent"
             }
         }, cancellationToken).ConfigureAwait(false);
 
         using var response = await WaitForResponseAsync(requestId, progress, cancellationToken).ConfigureAwait(false);
-        if (response.RootElement.TryGetProperty("result", out var result)
-            && result.TryGetProperty("thread", out var thread)
-            && thread.TryGetProperty("id", out var threadId))
+        if (TryReadThreadId(response.RootElement, out var threadId))
         {
-            _threadId = threadId.GetString();
+            _threadId = threadId;
             progress(new AgentProgress($"Codex app-server thread started: {_threadId}"));
             return;
         }
@@ -295,6 +402,7 @@ public sealed class CodexAppServerProvider : IAgentProvider
             }
         }
 
+        CodexSessionStore.SaveWorkingDirectoryThread(_workingDirectory, _threadId, _model);
         return new AgentProviderResult(text.ToString().Trim(), _model, _threadId, usage, 0, "");
     }
 
@@ -618,6 +726,26 @@ public sealed class CodexAppServerProvider : IAgentProvider
         element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String
             ? value.GetString()
             : null;
+
+    private static bool TryReadThreadId(JsonElement root, out string threadId)
+    {
+        threadId = "";
+        if (root.TryGetProperty("result", out var result)
+            && result.TryGetProperty("thread", out var thread)
+            && thread.TryGetProperty("id", out var threadIdElement))
+        {
+            threadId = threadIdElement.GetString() ?? "";
+            return threadId.Length > 0;
+        }
+
+        return false;
+    }
+
+    private static string BuildBaseInstructions() =>
+        "You are RhinoAgent's long-running Codex app-server provider. Follow each user message exactly.";
+
+    private static string BuildDeveloperInstructions() =>
+        "RhinoAgent handles tools itself through hidden <rhino-agent> JSON blocks. Do not call native app-server tools, shell commands, file tools, web search, MCP tools, or user-input tools. Keep turns fast and emit the requested hidden block as soon as an action is needed.";
 
     private static object? ReadRequestId(JsonElement idElement) => idElement.ValueKind switch
     {

@@ -35,7 +35,7 @@ public static class SlashCommands
                 return SlashCommandResult.Handled;
             case "/clear":
                 session.Clear();
-                CommandLineUi.Debug("Conversation cleared for this Rhino Agent session.");
+                CommandLineUi.Debug("Conversation and saved provider resume state cleared for this working directory.");
                 return SlashCommandResult.Handled;
             case "/status":
             {
@@ -95,7 +95,7 @@ public static class SlashCommands
                 SetProviderTimeout(config, arg);
                 return SlashCommandResult.Handled;
             case "/compact":
-                CommandLineUi.Debug("Compaction is not needed yet. This V0 keeps only the recent in-memory turns and does not persist sessions.");
+                CommandLineUi.Debug("Compaction is not needed yet. RhinoAgent keeps only recent local prompt history; provider-level sessions are resumed separately when supported.");
                 return SlashCommandResult.Handled;
             case "/config":
                 PrintConfig(config);
@@ -128,7 +128,7 @@ public static class SlashCommands
             "  _Command / -Command       Native Rhino command passthrough",
             "  Line / user aliases       Direct command and alias passthrough",
             "  /ask <prompt>             Force chat when text starts like a command",
-            "  /clear                    Clear this in-memory conversation",
+            "  /clear                    Clear local history and saved provider resume state",
             "  /usage [on|off]           Show, hide, or explain exact usage reporting",
             "  /exit                     Leave Agent"
         ]));
@@ -143,7 +143,7 @@ public static class SlashCommands
 
         CommandLineUi.Debug(message);
         if (ok)
-            CommandLineUi.Debug("Local RhinoAgent history was cleared. Type the next prompt to continue that Claude conversation.");
+            CommandLineUi.Debug("Local RhinoAgent history was cleared. Type the next prompt to continue that provider conversation.");
     }
 
     private static void PrintConfig(AgentConfig config)

@@ -24,6 +24,7 @@ public abstract class ExternalProcessProvider : IAgentProvider
     public AgentProviderProcessMode ProcessMode => AgentProviderProcessMode.Stateless;
     protected string Model { get; }
     protected AgentPermissionMode PermissionMode { get; }
+    protected string WorkingDirectory => _workingDirectory;
 
     public async Task<AgentProviderResult> RunPromptAsync(
         string prompt,
