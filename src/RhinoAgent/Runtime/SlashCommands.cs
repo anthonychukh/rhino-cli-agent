@@ -1,5 +1,7 @@
 using Rhino;
+using Rhino.Input.Custom;
 using RhinoAgent.Config;
+using RhinoAgent.Skills;
 
 namespace RhinoAgent.Runtime;
 
@@ -32,6 +34,10 @@ public static class SlashCommands
                 return SlashCommandResult.Exit;
             case "/help":
                 PrintHelp();
+                return SlashCommandResult.Handled;
+            case "/skill":
+            case "/skills":
+                HandleSkillCommand(arg, config, session, services);
                 return SlashCommandResult.Handled;
             case "/clear":
                 session.Clear();
@@ -123,6 +129,7 @@ public static class SlashCommands
             "  /mode ask|auto|full|plan",
             "  /debug on|off            Show or hide debug progress/tool messages",
             "  /timeout <seconds>|off   Limit a provider turn so Agent does not wait forever",
+            "  /skill ...                List, use, create, export, or manage RhinoAgent skills",
             "  /run <command>            Run a Rhino command manually while in Agent",
             "  ! <command>               Pass a command or alias directly to Rhino",
             "  _Command / -Command       Native Rhino command passthrough",
@@ -132,6 +139,243 @@ public static class SlashCommands
             "  /usage [on|off]           Show, hide, or explain exact usage reporting",
             "  /exit                     Leave Agent"
         ]));
+    }
+
+    private static void HandleSkillCommand(
+        string arg,
+        AgentConfig config,
+        AgentSession session,
+        AgentServices services)
+    {
+        var parts = arg.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries);
+        var subcommand = parts.Length > 0 ? parts[0].Trim().ToLowerInvariant() : "";
+        var name = parts.Length > 1 ? parts[1].Trim() : "";
+        var rest = parts.Length > 2 ? parts[2].Trim() : "";
+
+        switch (subcommand)
+        {
+            case "":
+            case "help":
+                PrintSkillHelp(services.SkillStore);
+                return;
+            case "list":
+                CommandLineUi.Debug(services.SkillStore.BuildSkillListSummary());
+                return;
+            case "show":
+                if (name.Length == 0)
+                {
+                    CommandLineUi.Debug("Usage: /skill show <name>");
+                    return;
+                }
+                PrintSkillReadResult(services.SkillStore.ReadSkillFile(name, "SKILL.md", 12000));
+                return;
+            case "use":
+                UseSkill(name, rest, config, session, services);
+                return;
+            case "create":
+            case "save":
+                var brief = arg.Length > subcommand.Length ? arg[subcommand.Length..].Trim() : "";
+                if (brief.Length == 0)
+                {
+                    CommandLineUi.Debug($"Usage: /skill {subcommand} <brief>");
+                    return;
+                }
+                RunAgentPrompt(config, session, BuildSkillCreationPrompt(subcommand, brief), ["skill-writer"]);
+                return;
+            case "enable":
+            case "disable":
+                if (name.Length == 0)
+                {
+                    CommandLineUi.Debug($"Usage: /skill {subcommand} <name>");
+                    return;
+                }
+                PrintSkillReadResult(services.SkillStore.SetEnabled(name, subcommand == "enable"));
+                return;
+            case "delete":
+                if (name.Length == 0)
+                {
+                    CommandLineUi.Debug("Usage: /skill delete <name>");
+                    return;
+                }
+                ExecuteSkillToolWithApproval(services, new ToolCallRequest
+                {
+                    Tool = "delete_skill",
+                    Arguments = new Dictionary<string, object?> { ["name"] = name }
+                });
+                return;
+            case "export":
+                if (name.Length == 0 || rest.Length == 0)
+                {
+                    CommandLineUi.Debug("Usage: /skill export <name> <destination-folder>");
+                    return;
+                }
+                ExecuteSkillToolWithApproval(services, new ToolCallRequest
+                {
+                    Tool = "export_skill",
+                    Arguments = new Dictionary<string, object?>
+                    {
+                        ["name"] = name,
+                        ["destination"] = rest,
+                        ["overwrite"] = false
+                    }
+                });
+                return;
+            case "demos":
+                InstallDemoSkills(services.SkillStore);
+                return;
+            default:
+                CommandLineUi.Debug($"Unknown skill command: {subcommand}. Type /skill help.");
+                return;
+        }
+    }
+
+    private static void PrintSkillHelp(SkillStore store)
+    {
+        CommandLineUi.Debug(string.Join(Environment.NewLine,
+        [
+            "RhinoAgent skill commands:",
+            $"  Root: {store.RootDirectory}",
+            "  /skill list",
+            "  /skill show <name>",
+            "  /skill use <name> [prompt]",
+            "  /skill create <brief>",
+            "  /skill save <brief>",
+            "  /skill enable|disable <name>",
+            "  /skill delete <name>",
+            "  /skill export <name> <destination-folder>",
+            "  /skill demos"
+        ]));
+    }
+
+    private static void UseSkill(
+        string name,
+        string prompt,
+        AgentConfig config,
+        AgentSession session,
+        AgentServices services)
+    {
+        if (name.Length == 0)
+        {
+            CommandLineUi.Debug("Usage: /skill use <name> [prompt]");
+            return;
+        }
+
+        var skill = services.SkillStore.GetSkill(name);
+        if (skill is null)
+        {
+            CommandLineUi.Debug($"Skill not found: {name}");
+            return;
+        }
+
+        if (!skill.Enabled)
+        {
+            CommandLineUi.Debug($"Skill is disabled: {skill.Name}");
+            return;
+        }
+
+        if (prompt.Length == 0)
+        {
+            session.QueueSkillForNextTurn(skill.Name);
+            CommandLineUi.Debug($"Queued skill for next prompt: {skill.Name}");
+            return;
+        }
+
+        RunAgentPrompt(config, session, prompt, [skill.Name]);
+    }
+
+    private static void ExecuteSkillToolWithApproval(AgentServices services, ToolCallRequest call)
+    {
+        if (!services.Approvals.ShouldExecute(call, services.ToolHost, out var reason))
+        {
+            CommandLineUi.Debug(reason);
+            return;
+        }
+
+        if (services.Approvals.RequiresPrompt(call, services.ToolHost)
+            && !services.Approvals.PromptForApproval(call, services.ToolHost))
+        {
+            CommandLineUi.Debug("Skill operation denied.");
+            return;
+        }
+
+        var result = services.ToolHost.ExecuteAsync(call).GetAwaiter().GetResult();
+        CommandLineUi.Debug(result.Output);
+    }
+
+    private static void InstallDemoSkills(SkillStore store)
+    {
+        CommandLineUi.Debug("Install demo skills: rhino-model-review, parametric-form-study, skill-writer");
+        if (!PromptYesNo("Install RhinoAgent demo skills?"))
+        {
+            CommandLineUi.Debug("Demo skill install canceled.");
+            return;
+        }
+
+        var results = DemoSkillInstaller.Install(store, overwrite: false);
+        CommandLineUi.Debug(string.Join(Environment.NewLine, results.Select(result => result.Message)));
+    }
+
+    private static bool PromptYesNo(string prompt)
+    {
+        var getter = new GetOption();
+        getter.SetCommandPrompt(prompt);
+        getter.AddOption("Yes");
+        getter.AddOption("No");
+        getter.AcceptNothing(true);
+
+        var result = getter.Get();
+        if (result != Rhino.Input.GetResult.Option)
+            return false;
+
+        return getter.Option()?.EnglishName == "Yes";
+    }
+
+    private static void PrintSkillReadResult(SkillOperationResult result)
+    {
+        CommandLineUi.Debug(result.Success ? result.Message : result.Message);
+    }
+
+    private static string BuildSkillCreationPrompt(string subcommand, string brief) =>
+        $"""
+        The user asked RhinoAgent to {subcommand} a reusable skill.
+
+        Brief:
+        {brief}
+
+        Create a concise Codex-style RhinoAgent skill. Pick a lowercase hyphenated name, write clear frontmatter with name and description, and include only useful files.
+        Use references, scripts, or assets only when they make the skill more reusable.
+        When ready, call create_skill with name, description, overwrite=false, and the complete files manifest.
+        Do not use write_file for this skill; use create_skill so RhinoAgent can validate and approve the manifest.
+        """;
+
+    private static void RunAgentPrompt(
+        AgentConfig config,
+        AgentSession session,
+        string prompt,
+        IReadOnlyList<string>? forcedSkillNames = null)
+    {
+        try
+        {
+            var timeoutSeconds = Math.Max(0, config.ProviderTurnTimeoutSeconds);
+            using var cancellation = timeoutSeconds > 0
+                ? new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds))
+                : new CancellationTokenSource();
+
+            session.RunUserTurnAsync(prompt, cancellation.Token, forcedSkillNames: forcedSkillNames)
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (OperationCanceledException)
+        {
+            var timeoutSeconds = Math.Max(0, config.ProviderTurnTimeoutSeconds);
+            CommandLineUi.Debug(timeoutSeconds > 0
+                ? $"Agent turn timed out after {timeoutSeconds} seconds. Use /timeout <seconds> to adjust or /timeout off to disable."
+                : "Agent turn was canceled.");
+        }
+        catch (Exception ex)
+        {
+            CommandLineUi.Debug($"Agent error: {ex.Message}");
+        }
     }
 
     private static void ContinueOrResumeProviderConversation(AgentSession session, string arg)

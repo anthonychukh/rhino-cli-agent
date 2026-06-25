@@ -17,7 +17,9 @@ public static class StatusPrinter
             $"  Usage messages: {(config.ShowUsageMessages ? "on" : "off")}",
             $"  Claude model: {config.ClaudeModel}",
             $"  Codex model: {config.CodexModel}",
-            $"  Codex effort: {FormatReasoningEffort(config.CodexReasoningEffort)}"
+            $"  Codex effort: {FormatReasoningEffort(config.CodexReasoningEffort)}",
+            $"  Skill root: {services.SkillStore.RootDirectory}",
+            $"  Skills: {services.SkillStore.ListSkills().Count}"
         };
 
         foreach (var status in services.ProviderFactory.GetProviderStatuses())

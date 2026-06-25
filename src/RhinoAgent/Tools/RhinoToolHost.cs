@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Rhino;
 using RhinoAgent.Runtime;
+using RhinoAgent.Skills;
 
 namespace RhinoAgent.Tools;
 
@@ -14,19 +15,32 @@ public sealed class RhinoToolHost
 
     private readonly RhinoDoc _doc;
     private readonly AgentConfig _config;
+    private readonly SkillStore _skillStore;
     private readonly Dictionary<string, Func<ToolCallRequest, Task<ToolExecutionResult>>> _tools;
     private readonly HashSet<string> _highImpactTools = new(StringComparer.OrdinalIgnoreCase)
     {
         "run_command",
         "run_python",
         "execute_csharp",
-        "write_file"
+        "write_file",
+        "create_skill",
+        "update_skill",
+        "delete_skill",
+        "export_skill"
+    };
+    private readonly HashSet<string> _alwaysPromptTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "create_skill",
+        "update_skill",
+        "delete_skill",
+        "export_skill"
     };
 
-    public RhinoToolHost(RhinoDoc doc, AgentConfig config)
+    public RhinoToolHost(RhinoDoc doc, AgentConfig config, SkillStore? skillStore = null)
     {
         _doc = doc;
         _config = config;
+        _skillStore = skillStore ?? new SkillStore();
         _tools = new(StringComparer.OrdinalIgnoreCase)
         {
             ["document_summary"] = DocumentSummary,
@@ -37,12 +51,19 @@ public sealed class RhinoToolHost
             ["capture_viewport"] = CaptureViewport,
             ["fetch_url"] = FetchUrl,
             ["read_file"] = ReadFile,
-            ["write_file"] = WriteFile
+            ["write_file"] = WriteFile,
+            ["list_skills"] = ListSkills,
+            ["read_skill_file"] = ReadSkillFile,
+            ["create_skill"] = CreateSkill,
+            ["update_skill"] = UpdateSkill,
+            ["delete_skill"] = DeleteSkill,
+            ["export_skill"] = ExportSkill
         };
     }
 
     public bool HasTool(string name) => _tools.ContainsKey(name);
     public bool IsHighImpact(string name) => _highImpactTools.Contains(name);
+    public bool AlwaysRequiresPrompt(string name) => _alwaysPromptTools.Contains(name);
 
     public string DescribeTools() =>
         """
@@ -55,7 +76,28 @@ public sealed class RhinoToolHost
         - fetch_url {"url":"https://example.com/product","max_chars":2500}: fetch a web page and return compact title, metadata, JSON-LD snippets, and readable text. Use this first for product-page modeling prompts.
         - read_file {"path":"relative/or/absolute"}: read a local text file.
         - write_file {"path":"relative/or/absolute","content":"..."}: write a local text file.
+        - list_skills {}: list saved RhinoAgent skills with names, descriptions, enabled state, and resource directories.
+        - read_skill_file {"name":"skill-name","path":"SKILL.md","max_chars":8000}: read a text file inside a saved skill folder.
+        - create_skill {"name":"skill-name","description":"...","overwrite":false,"files":[{"path":"SKILL.md","content":"..."},{"path":"references/details.md","content":"..."}]}: create a Codex-style RhinoAgent skill folder. Skill names use lowercase letters, digits, and hyphens.
+        - update_skill {"name":"skill-name","description":"...","files":[{"path":"SKILL.md","content":"..."}]}: update an existing skill by applying the provided files after validation.
+        - delete_skill {"name":"skill-name"}: delete a saved skill folder.
+        - export_skill {"name":"skill-name","destination":"relative/or/absolute/folder","overwrite":false}: copy a saved skill folder to another folder for external use.
         """;
+
+    public string DescribeApproval(ToolCallRequest call)
+    {
+        if (!_alwaysPromptTools.Contains(call.Tool))
+            return "";
+
+        return call.Tool.ToLowerInvariant() switch
+        {
+            "create_skill" => DescribeSkillWriteApproval("Create skill", call),
+            "update_skill" => DescribeSkillWriteApproval("Update skill", call),
+            "delete_skill" => $"Delete skill: {GetString(call, "name") ?? "(missing name)"}",
+            "export_skill" => $"Export skill: {GetString(call, "name") ?? "(missing name)"} to {GetString(call, "destination") ?? "(missing destination)"}",
+            _ => ""
+        };
+    }
 
     public Task<ToolExecutionResult> ExecuteAsync(ToolCallRequest call)
     {
@@ -207,6 +249,53 @@ public sealed class RhinoToolHost
         return Success(call.Tool, $"Wrote {path}");
     }
 
+    private Task<ToolExecutionResult> ListSkills(ToolCallRequest call) =>
+        Success(call.Tool, JsonSerializer.Serialize(_skillStore.ListSkills(), JsonOptions.Loose));
+
+    private Task<ToolExecutionResult> ReadSkillFile(ToolCallRequest call)
+    {
+        var result = _skillStore.ReadSkillFile(
+            GetString(call, "name") ?? "",
+            GetString(call, "path") ?? "SKILL.md",
+            Math.Clamp(GetInt(call, "max_chars") ?? 8000, 1000, 20000));
+        return SkillResult(call.Tool, result);
+    }
+
+    private Task<ToolExecutionResult> CreateSkill(ToolCallRequest call)
+    {
+        if (!TryReadSkillWriteRequest(call, out var request, out var error))
+            return Failure(call.Tool, error);
+
+        return SkillResult(call.Tool, _skillStore.SaveSkill(request, update: false));
+    }
+
+    private Task<ToolExecutionResult> UpdateSkill(ToolCallRequest call)
+    {
+        if (!TryReadSkillWriteRequest(call, out var request, out var error))
+            return Failure(call.Tool, error);
+
+        return SkillResult(call.Tool, _skillStore.SaveSkill(request, update: true));
+    }
+
+    private Task<ToolExecutionResult> DeleteSkill(ToolCallRequest call)
+    {
+        var result = _skillStore.DeleteSkill(GetString(call, "name") ?? "");
+        return SkillResult(call.Tool, result);
+    }
+
+    private Task<ToolExecutionResult> ExportSkill(ToolCallRequest call)
+    {
+        var destination = ResolvePath(GetString(call, "destination"));
+        if (destination is null)
+            return Failure(call.Tool, "Missing destination.");
+
+        var result = _skillStore.ExportSkill(
+            GetString(call, "name") ?? "",
+            destination,
+            GetBool(call, "overwrite") ?? false);
+        return SkillResult(call.Tool, result);
+    }
+
     private string? ResolvePath(string? path)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -223,6 +312,57 @@ public sealed class RhinoToolHost
 
     private static Task<ToolExecutionResult> Failure(string tool, string output) =>
         Task.FromResult(new ToolExecutionResult(tool, false, output, true, false));
+
+    private static Task<ToolExecutionResult> SkillResult(string tool, SkillOperationResult result)
+    {
+        var output = JsonSerializer.Serialize(new
+        {
+            message = result.Message,
+            skill = result.Skill,
+            files = result.Files
+        }, JsonOptions.Loose);
+        return Task.FromResult(new ToolExecutionResult(tool, result.Success, output, true, false));
+    }
+
+    private static bool TryReadSkillWriteRequest(ToolCallRequest call, out SkillWriteRequest request, out string error)
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(call.Arguments, JsonOptions.Loose);
+            request = JsonSerializer.Deserialize<SkillWriteRequest>(json, JsonOptions.Loose) ?? new SkillWriteRequest();
+            error = "";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            request = new SkillWriteRequest();
+            error = $"Invalid skill write request: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static string DescribeSkillWriteApproval(string title, ToolCallRequest call)
+    {
+        if (!TryReadSkillWriteRequest(call, out var request, out var error))
+            return $"{title}: {error}";
+
+        var files = request.Files.Count == 0
+            ? "(no files)"
+            : string.Join(Environment.NewLine, request.Files.Select(file =>
+            {
+                var source = string.IsNullOrWhiteSpace(file.SourcePath) ? "content" : $"source {file.SourcePath}";
+                return $"  - {file.Path} ({source})";
+            }));
+
+        return string.Join(Environment.NewLine,
+        [
+            $"{title}: {request.Name}",
+            $"Description: {request.Description}",
+            $"Overwrite: {request.Overwrite}",
+            "Files:",
+            files
+        ]);
+    }
 
     private static HttpClient CreateHttpClient()
     {

@@ -1,5 +1,6 @@
 using System.Text;
 using Rhino;
+using RhinoAgent.Skills;
 using RhinoAgent.Tools;
 
 namespace RhinoAgent.Runtime;
@@ -11,7 +12,8 @@ public static class AgentPromptBuilder
         AgentConfig config,
         IReadOnlyList<(string Role, string Text)> history,
         IReadOnlyList<ToolExecutionResult> toolResults,
-        string toolDescriptions)
+        string toolDescriptions,
+        IReadOnlyList<SkillContext>? selectedSkills = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine("You are RhinoAgent, an agent running inside Rhino's command line.");
@@ -33,12 +35,27 @@ public static class AgentPromptBuilder
         sb.AppendLine("For complex modeling prompts, make the main silhouette first and add distinctive details in the same or next tool round.");
         sb.AppendLine("For geometry creation, prefer execute_csharp with RhinoCommon when a Rhino command would require interactive prompts.");
         sb.AppendLine("Use document_summary, list_objects, or RhinoCommon scripts for exact model facts. Use capture_viewport only for visual validation such as silhouette, framing, recognizability, overlap, or whether the model looks right.");
+        sb.AppendLine("Use loaded skills as reusable instructions. If a loaded skill references a file you need, call read_skill_file for that exact file instead of guessing its contents.");
         sb.AppendLine("When capture_viewport returns image paths and a manifest, use the manifest metadata in text-only contexts and describe what the capture can and cannot prove.");
         sb.AppendLine("In C# scripts, write messages with output.AppendLine(...) or output.WriteLine(...).");
         sb.AppendLine();
         sb.AppendLine("Available tools:");
         sb.AppendLine(toolDescriptions);
         sb.AppendLine();
+
+        if (selectedSkills is { Count: > 0 })
+        {
+            sb.AppendLine("Loaded skills:");
+            foreach (var skill in selectedSkills)
+            {
+                sb.AppendLine($"--- skill: {skill.Name} ---");
+                sb.AppendLine($"directory: {skill.Directory}");
+                sb.AppendLine(skill.SkillMarkdown.Trim());
+                sb.AppendLine($"--- end skill: {skill.Name} ---");
+            }
+            sb.AppendLine();
+        }
+
         sb.AppendLine("Current Rhino document:");
         sb.AppendLine(RhinoDocumentSummarizer.Summarize(doc));
         sb.AppendLine();

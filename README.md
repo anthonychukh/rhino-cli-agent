@@ -109,6 +109,7 @@ Slash commands inside `Agent`:
 - `/mode ask|auto|full|plan`
 - `/debug on|off`
 - `/timeout <seconds>|off`
+- `/skill list|show|use|create|save|enable|disable|delete|export|demos`
 - `/run <rhino command>`
 - `! <rhino command or alias>`
 - `_Command`, `-Command`, `.Command`, known Rhino command names, or aliases for native passthrough
@@ -154,12 +155,44 @@ Current tools:
 - `run_python`
 - `execute_csharp`
 - `capture_viewport`
+- `fetch_url`
 - `read_file`
 - `write_file`
+- `list_skills`
+- `read_skill_file`
+- `create_skill`
+- `update_skill`
+- `delete_skill`
+- `export_skill`
 
 This is deliberately close to the tool shape used by Rhino MCP projects, but without requiring a separate MCP bridge between the model and Rhino.
 
 `capture_viewport` writes PNG files and a compact JSON manifest under the system temp folder. Use exact model tools first for dimensions, object IDs, layers, topology, and other CAD facts; use viewport capture when visual feedback matters, such as silhouette, framing, overlap, recognizability, or whether a generated model looks right.
+
+## Skills
+
+RhinoAgent can create and use Codex-style skill folders without enabling native provider tools. Skills are stored per user under:
+
+```text
+%APPDATA%/RhinoAgent/skills
+```
+
+Each skill uses a required `SKILL.md` with `name` and `description` frontmatter and may include `references/`, `scripts/`, `assets/`, and `agents/openai.yaml`. Before each provider turn, RhinoAgent matches enabled skills by explicit name or description keywords, loads up to three matching `SKILL.md` files, and prints a compact `Loaded skill: ...` message.
+
+Skill creation and export stay inside RhinoAgent's approval model. `create_skill`, `update_skill`, `delete_skill`, and `export_skill` show a manifest summary and ask for approval even in `full` mode.
+
+Useful commands:
+
+```text
+/skill demos
+/skill list
+/skill show rhino-model-review
+/skill use parametric-form-study create a small facade panel study
+/skill create a reusable workflow for checking imported STEP files
+/skill export skill-writer C:\Users\you\Desktop\skills
+```
+
+`/skill demos` installs three testable demo skills: `rhino-model-review`, `parametric-form-study`, and `skill-writer`.
 
 ## Configuration
 

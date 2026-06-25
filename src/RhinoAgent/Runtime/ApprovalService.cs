@@ -27,6 +27,8 @@ public sealed class ApprovalService
 
     public bool RequiresPrompt(ToolCallRequest call, RhinoToolHost host)
     {
+        if (host.AlwaysRequiresPrompt(call.Tool))
+            return true;
         if (_config.PermissionMode == AgentPermissionMode.FullAccess)
             return false;
         if (_config.PermissionMode == AgentPermissionMode.Ask)
@@ -37,8 +39,12 @@ public sealed class ApprovalService
         return host.IsHighImpact(call.Tool);
     }
 
-    public bool PromptForApproval(ToolCallRequest call)
+    public bool PromptForApproval(ToolCallRequest call, RhinoToolHost host)
     {
+        var preview = host.DescribeApproval(call);
+        if (!string.IsNullOrWhiteSpace(preview))
+            CommandLineUi.Debug(preview);
+
         var getter = new GetOption();
         getter.SetCommandPrompt($"Approve Agent tool '{call.Tool}'?");
         getter.AddOption("Yes");

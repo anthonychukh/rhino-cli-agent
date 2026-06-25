@@ -1,6 +1,7 @@
 using System.Text;
 using Rhino;
 using RhinoAgent.Providers;
+using RhinoAgent.Skills;
 using RhinoAgent.Tools;
 
 namespace RhinoAgent.Runtime;
@@ -12,26 +13,37 @@ public sealed class AgentSession
     private readonly IAgentProvider _provider;
     private readonly RhinoToolHost _toolHost;
     private readonly ApprovalService _approvals;
+    private readonly SkillStore _skillStore;
     private readonly List<(string Role, string Text)> _history = [];
+    private readonly List<string> _queuedSkillNames = [];
 
     public AgentSession(
         RhinoDoc doc,
         AgentConfig config,
         IAgentProvider provider,
         RhinoToolHost toolHost,
-        ApprovalService approvals)
+        ApprovalService approvals,
+        SkillStore? skillStore = null)
     {
         _doc = doc;
         _config = config;
         _provider = provider;
         _toolHost = toolHost;
         _approvals = approvals;
+        _skillStore = skillStore ?? new SkillStore();
     }
 
     public void Clear()
     {
         _history.Clear();
+        _queuedSkillNames.Clear();
         _provider.Reset();
+    }
+
+    public void QueueSkillForNextTurn(string name)
+    {
+        if (!string.IsNullOrWhiteSpace(name))
+            _queuedSkillNames.Add(name);
     }
 
     public bool TryContinueLatestProviderConversation(out string message)
@@ -65,10 +77,15 @@ public sealed class AgentSession
     public async Task<AgentTurnResult> RunUserTurnAsync(
         string userMessage,
         CancellationToken cancellationToken = default,
-        Action<string>? diagnostics = null)
+        Action<string>? diagnostics = null,
+        IReadOnlyList<string>? forcedSkillNames = null)
     {
         diagnostics?.Invoke("turn-entered");
         _history.Add(("user", userMessage));
+        var selectedSkills = SelectSkillsForTurn(userMessage, forcedSkillNames);
+        if (selectedSkills.Count > 0)
+            CommandLineUi.Debug("Loaded skill: " + string.Join(", ", selectedSkills.Select(skill => skill.Name)));
+
         var toolResults = new List<ToolExecutionResult>();
         var visibleTranscript = new StringBuilder();
         var totalToolCalls = 0;
@@ -78,7 +95,7 @@ public sealed class AgentSession
         var maxRounds = Math.Max(1, _config.MaxToolRounds);
         for (var round = 0; round < maxRounds; round++)
         {
-            var prompt = AgentPromptBuilder.Build(_doc, _config, _history, toolResults, _toolHost.DescribeTools());
+            var prompt = AgentPromptBuilder.Build(_doc, _config, _history, toolResults, _toolHost.DescribeTools(), selectedSkills);
             diagnostics?.Invoke($"prompt-built: {prompt.Length} chars");
             WritePromptPackageToDebugger(prompt, round, maxRounds);
             diagnostics?.Invoke("thinking-write-start");
@@ -166,7 +183,7 @@ public sealed class AgentSession
                     continue;
                 }
 
-                if (_approvals.RequiresPrompt(call, _toolHost) && !_approvals.PromptForApproval(call))
+                if (_approvals.RequiresPrompt(call, _toolHost) && !_approvals.PromptForApproval(call, _toolHost))
                 {
                     toolResults.Add(new ToolExecutionResult(call.Tool, false, "User denied tool call.", false, true));
                     diagnostics?.Invoke($"tool-denied: {call.Tool}");
@@ -236,6 +253,24 @@ public sealed class AgentSession
 
         if (parts.Count > 0)
             CommandLineUi.Usage(string.Join(", ", parts));
+    }
+
+    private IReadOnlyList<SkillContext> SelectSkillsForTurn(string userMessage, IReadOnlyList<string>? forcedSkillNames)
+    {
+        var forced = forcedSkillNames is { Count: > 0 }
+            ? forcedSkillNames.ToArray()
+            : DrainQueuedSkillNames();
+        return _skillStore.SelectRelevantSkills(userMessage, 3, forced);
+    }
+
+    private string[] DrainQueuedSkillNames()
+    {
+        if (_queuedSkillNames.Count == 0)
+            return [];
+
+        var names = _queuedSkillNames.ToArray();
+        _queuedSkillNames.Clear();
+        return names;
     }
 
     [System.Diagnostics.Conditional("DEBUG")]

@@ -9,6 +9,7 @@ using Rhino.Geometry;
 using RhinoAgent.Config;
 using RhinoAgent.Providers;
 using RhinoAgent.Runtime;
+using RhinoAgent.Skills;
 using RhinoAgent.Tools;
 
 namespace RhinoAgent.Commands;
@@ -55,6 +56,9 @@ public sealed class AgentSelfTestCommand : Command
         var viewportCaptureAwareness = RunViewportCaptureAwareness(doc);
         success = success && viewportCaptureAwareness.Ok;
 
+        var skillSystem = RunSkillSystemSelfTest(doc);
+        success = success && skillSystem.Ok;
+
         var payload = new
         {
             ok = success,
@@ -92,6 +96,7 @@ public sealed class AgentSelfTestCommand : Command
             },
             scriptedToolRecovery,
             viewportCaptureAwareness,
+            skillSystem,
             commands = new[]
             {
                 "Agent",
@@ -120,6 +125,149 @@ public sealed class AgentSelfTestCommand : Command
 
     public static string GetOutputPath() =>
         Path.Combine(Path.GetTempPath(), "RhinoAgent", "self-test.json");
+
+    private static SkillSystemSelfTestResult RunSkillSystemSelfTest(RhinoDoc doc)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "RhinoAgent", "skill-self-test-" + Guid.NewGuid().ToString("N"));
+        var provider = new ScriptedSkillUseProvider();
+        Exception? exception = null;
+        IReadOnlyList<SkillOperationResult> demoResults = [];
+        ToolExecutionResult? createToolResult = null;
+        ToolExecutionResult? readToolResult = null;
+        ToolExecutionResult? unsafeToolResult = null;
+        IReadOnlyList<SkillInfo> skills = [];
+        IReadOnlyList<SkillContext> selected = [];
+        AgentTurnResult? turnResult = null;
+
+        try
+        {
+            var store = new SkillStore(root);
+            demoResults = DemoSkillInstaller.Install(store, overwrite: false);
+
+            var config = new AgentConfig
+            {
+                PermissionMode = AgentPermissionMode.FullAccess,
+                ProviderProcessMode = AgentProviderProcessMode.Stateless,
+                MaxToolRounds = 2
+            };
+            var toolHost = new RhinoToolHost(doc, config, store);
+            var approvals = new ApprovalService(config);
+
+            createToolResult = toolHost.ExecuteAsync(new ToolCallRequest
+                {
+                    Tool = "create_skill",
+                    Arguments = new Dictionary<string, object?>
+                    {
+                        ["name"] = "general-note-polisher",
+                        ["description"] = "Polish short project notes into concise next actions. Use when the user asks to rewrite notes, clarify decisions, or turn rough notes into action items.",
+                        ["files"] = new object[]
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["path"] = "SKILL.md",
+                                ["content"] =
+                                    """
+                                    ---
+                                    name: general-note-polisher
+                                    description: Polish short project notes into concise next actions. Use when the user asks to rewrite notes, clarify decisions, or turn rough notes into action items.
+                                    ---
+
+                                    # General Note Polisher
+
+                                    Preserve named people, tools, dates, and commitments.
+                                    Convert vague follow-ups into explicit action items when the source text supports it.
+                                    Keep the final output concise and ready to paste.
+                                    """
+                            }
+                        }
+                    }
+                })
+                .GetAwaiter()
+                .GetResult();
+
+            readToolResult = toolHost.ExecuteAsync(new ToolCallRequest
+                {
+                    Tool = "read_skill_file",
+                    Arguments = new Dictionary<string, object?>
+                    {
+                        ["name"] = "general-note-polisher",
+                        ["path"] = "SKILL.md"
+                    }
+                })
+                .GetAwaiter()
+                .GetResult();
+
+            unsafeToolResult = toolHost.ExecuteAsync(new ToolCallRequest
+                {
+                    Tool = "create_skill",
+                    Arguments = new Dictionary<string, object?>
+                    {
+                        ["name"] = "unsafe-skill",
+                        ["description"] = "This intentionally fails because it tries to write outside the skill folder.",
+                        ["files"] = new object[]
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["path"] = "../escape.txt",
+                                ["content"] = "bad"
+                            }
+                        }
+                    }
+                })
+                .GetAwaiter()
+                .GetResult();
+
+            skills = store.ListSkills();
+            selected = store.SelectRelevantSkills("Create a parametric facade grid form study in Rhino.", 3);
+            var session = new AgentSession(doc, config, provider, toolHost, approvals, store);
+            turnResult = session.RunUserTurnAsync(
+                    "Use parametric form study to plan a facade grid.",
+                    forcedSkillNames: ["parametric-form-study"])
+                .GetAwaiter()
+                .GetResult();
+        }
+        catch (Exception ex)
+        {
+            exception = ex;
+        }
+        finally
+        {
+            TryDeleteDirectory(root);
+        }
+
+        var demosOk = demoResults.Count == 3 && demoResults.All(result => result.Success);
+        var createToolOk = createToolResult?.Success == true;
+        var readToolOk = readToolResult?.Success == true
+            && readToolResult.Output.Contains("general-note-polisher", StringComparison.OrdinalIgnoreCase);
+        var unsafeRejected = unsafeToolResult?.Success == false;
+        var selectedParametric = selected.Any(skill => skill.Name == "parametric-form-study");
+        var promptHadSkill = provider.Prompts.Any(prompt =>
+            prompt.Contains("--- skill: parametric-form-study ---", StringComparison.OrdinalIgnoreCase)
+            && prompt.Contains("layered-box-grid.csx", StringComparison.OrdinalIgnoreCase));
+        var ok = exception is null
+            && demosOk
+            && createToolOk
+            && readToolOk
+            && unsafeRejected
+            && skills.Count >= 4
+            && selectedParametric
+            && turnResult?.Success == true
+            && promptHadSkill;
+
+        return new SkillSystemSelfTestResult(
+            ok,
+            root,
+            demoResults.Select(result => result.Message).ToArray(),
+            skills.Select(skill => skill.Name).ToArray(),
+            selected.Select(skill => skill.Name).ToArray(),
+            createToolOk,
+            readToolOk,
+            unsafeRejected,
+            turnResult?.Success ?? false,
+            provider.Prompts.Count,
+            promptHadSkill,
+            FirstNonEmpty(exception?.Message, turnResult?.Error));
+    }
 
     private static ViewportCaptureAwarenessResult RunViewportCaptureAwareness(RhinoDoc doc)
     {
@@ -381,6 +529,19 @@ public sealed class AgentSelfTestCommand : Command
     private static string? FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
 
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+                Directory.Delete(path, recursive: true);
+        }
+        catch
+        {
+            // Self-test cleanup is best-effort.
+        }
+    }
+
     private static bool TryReadNonBackgroundRatio(string manifestPath, out double ratio)
     {
         ratio = 0;
@@ -466,6 +627,20 @@ public sealed class AgentSelfTestCommand : Command
         bool VisualVariationDetected,
         bool ResponseUnderstoodCapture,
         string VisibleText,
+        string? Error);
+
+    private sealed record SkillSystemSelfTestResult(
+        bool Ok,
+        string Root,
+        IReadOnlyList<string> DemoInstallMessages,
+        IReadOnlyList<string> SkillNames,
+        IReadOnlyList<string> SelectedSkillNames,
+        bool CreateToolOk,
+        bool ReadToolOk,
+        bool UnsafePathRejected,
+        bool TurnSuccess,
+        int ProviderPromptCount,
+        bool PromptHadSkill,
         string? Error);
 
     private sealed class ScriptedToolRecoveryProvider : IAgentProvider
@@ -570,6 +745,48 @@ public sealed class AgentSelfTestCommand : Command
                 {visibleText}
                 <rhino-agent>{JsonSerializer.Serialize(envelope, JsonOptions.Loose)}</rhino-agent>
                 """;
+        }
+    }
+
+    private sealed class ScriptedSkillUseProvider : IAgentProvider
+    {
+        private readonly List<string> _prompts = [];
+
+        public AgentProviderKind Kind => AgentProviderKind.Codex;
+        public string DisplayName => "Scripted skill-use self-test provider";
+        public AgentProviderProcessMode ProcessMode => AgentProviderProcessMode.Stateless;
+        public IReadOnlyList<string> Prompts => _prompts;
+
+        public Task<AgentProviderResult> RunPromptAsync(
+            string prompt,
+            Action<AgentProgress> progress,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _prompts.Add(prompt);
+            progress(new AgentProgress("scripted skill-use self-test turn"));
+
+            var sawSkill = prompt.Contains("--- skill: parametric-form-study ---", StringComparison.OrdinalIgnoreCase);
+            var text = sawSkill
+                ? "The parametric form study skill is loaded and ready to guide the facade grid."
+                : "No matching skill instructions were loaded.";
+
+            return Task.FromResult(new AgentProviderResult(
+                text,
+                "self-test",
+                "scripted-skill-use",
+                null,
+                0,
+                ""));
+        }
+
+        public void Reset()
+        {
+            _prompts.Clear();
+        }
+
+        public void Dispose()
+        {
         }
     }
 

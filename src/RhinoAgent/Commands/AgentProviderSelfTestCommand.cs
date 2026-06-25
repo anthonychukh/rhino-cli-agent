@@ -42,7 +42,7 @@ public sealed class AgentProviderSelfTestCommand : Command
         {
             using var providerScope = provider;
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(120));
-            var session = new AgentSession(doc, config, provider, services.ToolHost, services.Approvals);
+            var session = new AgentSession(doc, config, provider, services.ToolHost, services.Approvals, services.SkillStore);
             WriteProgress(progressPath, "session-created");
             var firstResult = session.RunUserTurnAsync(
                     "Provider smoke test. Reply exactly RHINO_AGENT_PROVIDER_OK and do not call tools.",
