@@ -38,7 +38,16 @@ public static class SlashCommands
                 CommandLineUi.Debug("Conversation cleared for this Rhino Agent session.");
                 return SlashCommandResult.Handled;
             case "/status":
+            {
                 StatusPrinter.Print(config, services);
+                var providerSessionStatus = session.GetProviderSessionStatus();
+                if (!string.IsNullOrWhiteSpace(providerSessionStatus))
+                    CommandLineUi.Debug(providerSessionStatus);
+                return SlashCommandResult.Handled;
+            }
+            case "/continue":
+            case "/resume":
+                ContinueOrResumeProviderConversation(session, arg);
                 return SlashCommandResult.Handled;
             case "/debug":
                 SetDebugMessages(config, arg);
@@ -106,6 +115,8 @@ public static class SlashCommands
             "  /status                   Show provider/auth/config status",
             "  /login [claude|codex]     Start provider login in a terminal",
             "  /provider [auto|claude|codex]",
+            "  /continue [latest|session-id]",
+            "  /resume [latest|session-id]",
             "  /process [long|stateless]",
             "  /model [model]            Set active provider model",
             "  /effort low|medium|high|off",
@@ -121,6 +132,18 @@ public static class SlashCommands
             "  /usage [on|off]           Show, hide, or explain exact usage reporting",
             "  /exit                     Leave Agent"
         ]));
+    }
+
+    private static void ContinueOrResumeProviderConversation(AgentSession session, string arg)
+    {
+        var resumeLatest = string.IsNullOrWhiteSpace(arg) || IsLatestResumeToken(arg);
+        var ok = resumeLatest
+            ? session.TryContinueLatestProviderConversation(out var message)
+            : session.TryResumeProviderConversation(arg, out message);
+
+        CommandLineUi.Debug(message);
+        if (ok)
+            CommandLineUi.Debug("Local RhinoAgent history was cleared. Type the next prompt to continue that Claude conversation.");
     }
 
     private static void PrintConfig(AgentConfig config)
@@ -328,6 +351,14 @@ public static class SlashCommands
 
     private static string FormatTimeout(int seconds) =>
         seconds > 0 ? $"{seconds} seconds" : "off";
+
+    private static bool IsLatestResumeToken(string value)
+    {
+        value = value.Trim();
+        return value.Equals("latest", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("last", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("--continue", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static string? NormalizeReasoningEffort(string value)
     {

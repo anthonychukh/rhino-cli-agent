@@ -3,33 +3,97 @@ using System.Text.Json;
 
 namespace RhinoAgent.Providers;
 
-public sealed class ClaudeCliProvider : ExternalProcessProvider
+public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationResumeProvider
 {
+    private string? _sessionId;
+    private string? _resumeSessionId;
+    private bool _continueLatestConversation;
+
     public ClaudeCliProvider(string executablePath, string model, AgentPermissionMode permissionMode, string workingDirectory)
         : base(executablePath, model, permissionMode, workingDirectory)
     {
     }
 
     public override AgentProviderKind Kind => AgentProviderKind.Claude;
-    public override string DisplayName => $"Claude Code ({Model}, {PermissionMode})";
+    public override string DisplayName => $"Claude Code ({Model}, {PermissionMode}, persistent)";
+    public string? ActiveSessionId => _sessionId;
+
+    public bool TryContinueLatestConversation(out string message)
+    {
+        _resumeSessionId = null;
+        _continueLatestConversation = true;
+        message = "Claude will continue the most recent saved conversation in this working directory on the next prompt.";
+        return true;
+    }
+
+    public bool TryResumeConversation(string sessionId, out string message)
+    {
+        sessionId = sessionId.Trim();
+        if (sessionId.Length == 0)
+        {
+            message = "Usage: /resume latest|<claude-session-id>";
+            return false;
+        }
+
+        _resumeSessionId = sessionId;
+        _continueLatestConversation = false;
+        message = $"Claude will resume session {sessionId} on the next prompt.";
+        return true;
+    }
 
     protected override IReadOnlyList<string> BuildArguments(string prompt)
     {
-        return
-        [
+        var args = new List<string>
+        {
             "-p",
             "--output-format", "stream-json",
             "--verbose",
             "--include-partial-messages",
-            "--no-session-persistence",
             "--tools", "",
             "--model", Model,
             "--permission-mode", MapPermissionMode(PermissionMode)
-        ];
+        };
+
+        if (!string.IsNullOrWhiteSpace(_resumeSessionId))
+        {
+            args.Add("--resume");
+            args.Add(_resumeSessionId);
+        }
+        else if (_continueLatestConversation)
+        {
+            args.Add("--continue");
+        }
+        else if (!string.IsNullOrWhiteSpace(_sessionId))
+        {
+            args.Add("--resume");
+            args.Add(_sessionId);
+        }
+
+        return args;
     }
 
     protected override IProviderOutputCollector CreateCollector(Action<AgentProgress> progress) =>
         new ClaudeOutputCollector(progress);
+
+    protected override void OnProviderResult(AgentProviderResult result)
+    {
+        var requestedSessionId = _resumeSessionId;
+
+        if (!string.IsNullOrWhiteSpace(result.SessionId))
+            _sessionId = result.SessionId;
+        else if (result.ExitCode == 0 && !string.IsNullOrWhiteSpace(requestedSessionId))
+            _sessionId = requestedSessionId;
+
+        _resumeSessionId = null;
+        _continueLatestConversation = false;
+    }
+
+    public override void Reset()
+    {
+        _sessionId = null;
+        _resumeSessionId = null;
+        _continueLatestConversation = false;
+    }
 
     private static string MapPermissionMode(AgentPermissionMode mode) => mode switch
     {

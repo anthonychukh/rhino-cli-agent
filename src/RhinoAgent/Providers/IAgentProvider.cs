@@ -11,3 +11,10 @@ public interface IAgentProvider : IDisposable
         CancellationToken cancellationToken);
     void Reset();
 }
+
+public interface IConversationResumeProvider
+{
+    string? ActiveSessionId { get; }
+    bool TryContinueLatestConversation(out string message);
+    bool TryResumeConversation(string sessionId, out string message);
+}

@@ -120,7 +120,9 @@ public abstract class ExternalProcessProvider : IAgentProvider
         }
 
         var exitCode = process.HasExited ? process.ExitCode : 0;
-        return collector.ToResult(exitCode, stderr.ToString());
+        var result = collector.ToResult(exitCode, stderr.ToString());
+        OnProviderResult(result);
+        return result;
     }
 
     private async Task<AgentProviderResult> RunPromptThroughCmdAsync(
@@ -200,13 +202,18 @@ public abstract class ExternalProcessProvider : IAgentProvider
         // are the fastest way to compare Rhino-hosted execution with a terminal.
         if (exitCode == 0)
             TryDeleteDirectory(tempDir);
-        return collector.ToResult(exitCode, stderr);
+        var result = collector.ToResult(exitCode, stderr);
+        OnProviderResult(result);
+        return result;
     }
 
     protected abstract IReadOnlyList<string> BuildArguments(string prompt);
     protected abstract IProviderOutputCollector CreateCollector(Action<AgentProgress> progress);
+    protected virtual void OnProviderResult(AgentProviderResult result)
+    {
+    }
 
-    public void Reset()
+    public virtual void Reset()
     {
     }
 

@@ -14,7 +14,7 @@ This is an early V0 meant for hands-on testing.
 - Plug-in format: RhinoCommon `.rhp`
 - Providers: Claude Code CLI and Codex CLI
 - Auth: delegates to the official provider CLI login flows
-- Session persistence: in-memory only for V0; Codex uses one long-running app-server process per `Agent` session by default
+- Session persistence: Claude Code print-mode sessions are saved by Claude and can be resumed with `/continue`; Codex uses one long-running app-server process per `Agent` session by default
 - Grasshopper: planned, not implemented yet
 
 ## Build
@@ -101,6 +101,8 @@ Slash commands inside `Agent`:
 - `/status`
 - `/login`
 - `/provider auto|claude|codex`
+- `/continue [latest|session-id]`
+- `/resume [latest|session-id]`
 - `/process long|stateless`
 - `/model <model>`
 - `/effort low|medium|high|off`
@@ -140,7 +142,7 @@ Changing `/process`, `/mode`, `/model`, or `/effort` saves config immediately, b
 
 The model emits hidden `<rhino-agent>{...}</rhino-agent>` tool blocks. RhinoAgent parses those blocks, executes them in-process, returns results to the model, and then asks the model to continue.
 
-For Claude Code, RhinoAgent disables Claude's native tool list for provider turns and keeps session persistence off. This keeps Rhino/file actions inside RhinoAgent's permission modes instead of letting the external CLI act on its own.
+For Claude Code, RhinoAgent disables Claude's native tool list for provider turns. This keeps Rhino/file actions inside RhinoAgent's permission modes instead of letting the external CLI act on its own. Claude session persistence stays on, RhinoAgent captures the returned `session_id`, and later turns pass `--resume <session_id>` so the provider conversation remains continuous. `/continue` clears RhinoAgent's local prompt history and passes Claude's `--continue` once so the next prompt resumes the most recent saved Claude conversation in the current working directory.
 
 For Codex long-running mode, RhinoAgent uses the app-server JSONL protocol directly instead of launching `codex exec` for every prompt. `/clear` clears RhinoAgent history and starts a fresh Codex thread on the next provider turn.
 

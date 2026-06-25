@@ -34,6 +34,34 @@ public sealed class AgentSession
         _provider.Reset();
     }
 
+    public bool TryContinueLatestProviderConversation(out string message)
+    {
+        if (!TryGetConversationResumeProvider(out var provider, out message))
+            return false;
+
+        _history.Clear();
+        return provider.TryContinueLatestConversation(out message);
+    }
+
+    public bool TryResumeProviderConversation(string sessionId, out string message)
+    {
+        if (!TryGetConversationResumeProvider(out var provider, out message))
+            return false;
+
+        _history.Clear();
+        return provider.TryResumeConversation(sessionId, out message);
+    }
+
+    public string? GetProviderSessionStatus()
+    {
+        if (_provider is not IConversationResumeProvider provider)
+            return null;
+
+        return string.IsNullOrWhiteSpace(provider.ActiveSessionId)
+            ? "  Active provider session: none captured yet"
+            : $"  Active provider session: {provider.ActiveSessionId}";
+    }
+
     public async Task<AgentTurnResult> RunUserTurnAsync(
         string userMessage,
         CancellationToken cancellationToken = default,
@@ -238,6 +266,26 @@ public sealed class AgentSession
     {
         if (_config.ShowDebugMessages)
             CommandLineUi.Debug(message);
+    }
+
+    private bool TryGetConversationResumeProvider(
+        out IConversationResumeProvider provider,
+        out string message)
+    {
+        if (_provider is IConversationResumeProvider resumeProvider)
+        {
+            provider = resumeProvider;
+            message = "";
+            return true;
+        }
+
+        provider = null!;
+        message = _provider.Kind == AgentProviderKind.Codex
+            ? _provider.ProcessMode == AgentProviderProcessMode.LongRunning
+                ? "Codex already continues within this Agent session. Cross-session resume is not supported by RhinoAgent yet."
+                : "Codex stateless mode starts a fresh provider process for each turn. Cross-session resume is not supported by RhinoAgent yet."
+            : $"{_provider.DisplayName} does not support conversation resume.";
+        return false;
     }
 
     private static string FormatArguments(Dictionary<string, object?> args) =>
