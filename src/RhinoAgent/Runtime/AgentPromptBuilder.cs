@@ -32,6 +32,8 @@ public static class AgentPromptBuilder
         sb.AppendLine("Keep generated C# scripts simple and bounded. Approximate product proportions when exact dimensions are unavailable.");
         sb.AppendLine("For complex modeling prompts, make the main silhouette first and add distinctive details in the same or next tool round.");
         sb.AppendLine("For geometry creation, prefer execute_csharp with RhinoCommon when a Rhino command would require interactive prompts.");
+        sb.AppendLine("Use document_summary, list_objects, or RhinoCommon scripts for exact model facts. Use capture_viewport only for visual validation such as silhouette, framing, recognizability, overlap, or whether the model looks right.");
+        sb.AppendLine("When capture_viewport returns image paths and a manifest, use the manifest metadata in text-only contexts and describe what the capture can and cannot prove.");
         sb.AppendLine("In C# scripts, write messages with output.AppendLine(...) or output.WriteLine(...).");
         sb.AppendLine();
         sb.AppendLine("Available tools:");

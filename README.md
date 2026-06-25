@@ -153,10 +153,13 @@ Current tools:
 - `run_command`
 - `run_python`
 - `execute_csharp`
+- `capture_viewport`
 - `read_file`
 - `write_file`
 
 This is deliberately close to the tool shape used by Rhino MCP projects, but without requiring a separate MCP bridge between the model and Rhino.
+
+`capture_viewport` writes PNG files and a compact JSON manifest under the system temp folder. Use exact model tools first for dimensions, object IDs, layers, topology, and other CAD facts; use viewport capture when visual feedback matters, such as silhouette, framing, overlap, recognizability, or whether a generated model looks right.
 
 ## Configuration
 
@@ -200,14 +203,13 @@ Rhino for Mac may launch without your shell's full `PATH`. RhinoAgent checks com
 
 ## Security
 
-`run_command`, `run_python`, `execute_csharp`, and `write_file` are powerful. They can change the active model and local files. Start in `ask` or `plan` mode when testing on real work.
+`run_command`, `run_python`, `execute_csharp`, and `write_file` are powerful. They can change the active model and local files. `capture_viewport` is read-only for the model, but it writes temporary PNG/JSON files and can reveal whatever is visible in the selected viewport. Start in `ask` or `plan` mode when testing on real work.
 
 ## Future TODOs
 
 - Grasshopper tool surface and graph-building.
 - Side panel for session restore/history.
 - Real allowlist/denylist policy.
-- Viewport capture and visual feedback.
 - Direct API adapters with native tool calling for API-key users.
 - Yak package build and release pipeline.
 - Broader provider JSONL event parsing across future Claude Code and Codex CLI versions.

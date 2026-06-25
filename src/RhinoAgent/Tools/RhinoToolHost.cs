@@ -34,6 +34,7 @@ public sealed class RhinoToolHost
             ["run_command"] = RunCommand,
             ["run_python"] = RunPython,
             ["execute_csharp"] = ExecuteCSharp,
+            ["capture_viewport"] = CaptureViewport,
             ["fetch_url"] = FetchUrl,
             ["read_file"] = ReadFile,
             ["write_file"] = WriteFile
@@ -50,6 +51,7 @@ public sealed class RhinoToolHost
         - run_command {"command":"_Sphere 0,0,0 5","echo":false}: run a complete native Rhino command macro with every prompt answered inline.
         - run_python {"script":"..."}: run Rhino Python through RunPythonScript when Rhino exposes that command. If Rhino reports an unknown command, use execute_csharp.
         - execute_csharp {"code":"..."}: run a RhinoCommon C# script with globals doc and output. Prefer this for geometry creation; output supports AppendLine(...) and WriteLine(...).
+        - capture_viewport {"views":"active|standard|Perspective,Top","display_mode":"current|wireframe|shaded|rendered","fit":"extents|current","width":1600,"height":1000,"draw_grid":false,"draw_axes":false,"selected_only":false}: capture Rhino viewport PNGs and a JSON manifest for visual validation. Use after metadata/tool inspection when the user asks whether the model looks right.
         - fetch_url {"url":"https://example.com/product","max_chars":2500}: fetch a web page and return compact title, metadata, JSON-LD snippets, and readable text. Use this first for product-page modeling prompts.
         - read_file {"path":"relative/or/absolute"}: read a local text file.
         - write_file {"path":"relative/or/absolute","content":"..."}: write a local text file.
@@ -155,6 +157,9 @@ public sealed class RhinoToolHost
 
         return await CSharpScriptRunner.ExecuteAsync(call.Tool, _doc, code);
     }
+
+    private Task<ToolExecutionResult> CaptureViewport(ToolCallRequest call) =>
+        Task.FromResult(RhinoViewportCapture.Execute(_doc, call));
 
     private Task<ToolExecutionResult> FetchUrl(ToolCallRequest call)
     {

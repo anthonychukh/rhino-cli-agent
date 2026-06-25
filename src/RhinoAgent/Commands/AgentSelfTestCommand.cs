@@ -1,8 +1,10 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Rhino;
 using Rhino.ApplicationSettings;
 using Rhino.Commands;
+using Rhino.DocObjects;
 using Rhino.Geometry;
 using RhinoAgent.Config;
 using RhinoAgent.Providers;
@@ -50,6 +52,9 @@ public sealed class AgentSelfTestCommand : Command
         var scriptedToolRecovery = RunScriptedToolRecovery(doc);
         success = success && scriptedToolRecovery.Ok;
 
+        var viewportCaptureAwareness = RunViewportCaptureAwareness(doc);
+        success = success && viewportCaptureAwareness.Ok;
+
         var payload = new
         {
             ok = success,
@@ -86,6 +91,7 @@ public sealed class AgentSelfTestCommand : Command
                 aliasRecognized
             },
             scriptedToolRecovery,
+            viewportCaptureAwareness,
             commands = new[]
             {
                 "Agent",
@@ -114,6 +120,125 @@ public sealed class AgentSelfTestCommand : Command
 
     public static string GetOutputPath() =>
         Path.Combine(Path.GetTempPath(), "RhinoAgent", "self-test.json");
+
+    private static ViewportCaptureAwarenessResult RunViewportCaptureAwareness(RhinoDoc doc)
+    {
+        var marker = Guid.NewGuid().ToString("N");
+        var beforeIds = doc.Objects
+            .Where(obj => !obj.IsDeleted)
+            .Select(obj => obj.Id)
+            .ToHashSet();
+        var selectedBefore = doc.Objects
+            .Where(obj => !obj.IsDeleted && obj.IsSelected(false) > 0)
+            .Select(obj => obj.Id)
+            .ToArray();
+        var provider = new ScriptedViewportCaptureProvider();
+        AgentTurnResult? turnResult = null;
+        Exception? exception = null;
+        Guid boxId = Guid.Empty;
+        double nonBackgroundRatio = 0;
+        var visualVariationDetected = false;
+
+        try
+        {
+            var attrs = new ObjectAttributes { Name = "RhinoAgent Visual Self-Test Box" };
+            attrs.SetUserString(SelfTestMarkerKey, marker);
+            var brep = new Box(
+                Plane.WorldXY,
+                new Interval(0, 10),
+                new Interval(0, 10),
+                new Interval(0, 10)).ToBrep();
+            boxId = doc.Objects.AddBrep(brep, attrs);
+            if (boxId == Guid.Empty)
+                throw new InvalidOperationException("Failed to add viewport-capture self-test box.");
+
+            doc.Objects.UnselectAll();
+            doc.Objects.Select(boxId);
+            doc.Views.Redraw();
+
+            var config = new AgentConfig
+            {
+                PermissionMode = AgentPermissionMode.FullAccess,
+                ProviderProcessMode = AgentProviderProcessMode.Stateless,
+                MaxToolRounds = 3
+            };
+            var toolHost = new RhinoToolHost(doc, config);
+            var approvals = new ApprovalService(config);
+            var session = new AgentSession(doc, config, provider, toolHost, approvals);
+            turnResult = session.RunUserTurnAsync(
+                    "Self-test visual awareness: capture the selected box and describe the visual result.")
+                .GetAwaiter()
+                .GetResult();
+
+            if (!string.IsNullOrWhiteSpace(provider.ObservedManifestPath))
+                visualVariationDetected = TryReadNonBackgroundRatio(provider.ObservedManifestPath, out nonBackgroundRatio)
+                    && nonBackgroundRatio > 0;
+        }
+        catch (Exception ex)
+        {
+            exception = ex;
+        }
+        finally
+        {
+            DeleteObjectsCreatedBySelfTest(doc, beforeIds, marker);
+            doc.Objects.UnselectAll();
+            foreach (var id in selectedBefore)
+            {
+                var obj = doc.Objects.FindId(id);
+                if (obj is not null && !obj.IsDeleted)
+                    doc.Objects.Select(id);
+            }
+            doc.Views.Redraw();
+        }
+
+        var captureResultFedBack = HasToolResultPrompt(provider.Prompts, "capture_viewport", true);
+        var imageExists = !string.IsNullOrWhiteSpace(provider.ObservedImagePath) && File.Exists(provider.ObservedImagePath);
+        var manifestExists = !string.IsNullOrWhiteSpace(provider.ObservedManifestPath) && File.Exists(provider.ObservedManifestPath);
+        var imageBytes = imageExists ? new FileInfo(provider.ObservedImagePath!).Length : 0;
+        var manifestBytes = manifestExists ? new FileInfo(provider.ObservedManifestPath!).Length : 0;
+        var visibleText = turnResult?.VisibleText ?? "";
+        var responseUnderstoodCapture = visibleText.Contains("nonblank", StringComparison.OrdinalIgnoreCase)
+            && visibleText.Contains("box", StringComparison.OrdinalIgnoreCase)
+            && visibleText.Contains("visual check", StringComparison.OrdinalIgnoreCase);
+        var ok = exception is null
+            && turnResult?.Success == true
+            && turnResult.ToolCallCount == 1
+            && turnResult.ToolResultCount == 1
+            && !turnResult.StoppedAfterToolLimit
+            && captureResultFedBack
+            && provider.ObservedCaptureSuccess
+            && provider.ObservedPixelSummary
+            && imageExists
+            && imageBytes > 0
+            && manifestExists
+            && manifestBytes > 0
+            && visualVariationDetected
+            && responseUnderstoodCapture;
+
+        return new ViewportCaptureAwarenessResult(
+            ok,
+            marker,
+            boxId,
+            provider.Prompts.Count,
+            turnResult?.Success ?? false,
+            turnResult?.ToolCallCount ?? 0,
+            turnResult?.ToolResultCount ?? 0,
+            turnResult?.StoppedAfterToolLimit ?? false,
+            captureResultFedBack,
+            provider.ObservedCaptureSuccess,
+            provider.ObservedPixelSummary,
+            provider.ObservedImagePath,
+            imageExists,
+            imageBytes,
+            provider.ObservedManifestPath,
+            manifestExists,
+            manifestBytes,
+            nonBackgroundRatio,
+            visualVariationDetected,
+            responseUnderstoodCapture,
+            visibleText,
+            FirstNonEmpty(exception?.Message, turnResult?.Error));
+    }
 
     private static ScriptedToolRecoveryResult RunScriptedToolRecovery(RhinoDoc doc)
     {
@@ -256,6 +381,34 @@ public sealed class AgentSelfTestCommand : Command
     private static string? FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
 
+    private static bool TryReadNonBackgroundRatio(string manifestPath, out double ratio)
+    {
+        ratio = 0;
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(manifestPath));
+            if (!document.RootElement.TryGetProperty("captures", out var captures)
+                || captures.ValueKind != JsonValueKind.Array)
+                return false;
+
+            foreach (var capture in captures.EnumerateArray())
+            {
+                if (capture.TryGetProperty("pixels", out var pixels)
+                    && pixels.TryGetProperty("nonBackgroundRatio", out var value)
+                    && value.ValueKind == JsonValueKind.Number)
+                {
+                    ratio = Math.Max(ratio, value.GetDouble());
+                }
+            }
+
+            return ratio > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static string[] GetAliasNames()
     {
         try
@@ -290,6 +443,30 @@ public sealed class AgentSelfTestCommand : Command
         string ExpectedBoundingBox,
         double MaxDeviation,
         double Tolerance);
+
+    private sealed record ViewportCaptureAwarenessResult(
+        bool Ok,
+        string Marker,
+        Guid BoxId,
+        int ProviderPromptCount,
+        bool TurnSuccess,
+        int ToolCallCount,
+        int ToolResultCount,
+        bool StoppedAfterToolLimit,
+        bool CaptureResultFedBack,
+        bool ObservedCaptureSuccess,
+        bool ObservedPixelSummary,
+        string? ImagePath,
+        bool ImageExists,
+        long ImageBytes,
+        string? ManifestPath,
+        bool ManifestExists,
+        long ManifestBytes,
+        double NonBackgroundRatio,
+        bool VisualVariationDetected,
+        bool ResponseUnderstoodCapture,
+        string VisibleText,
+        string? Error);
 
     private sealed class ScriptedToolRecoveryProvider : IAgentProvider
     {
@@ -375,6 +552,134 @@ public sealed class AgentSelfTestCommand : Command
             doc.Views.Redraw();
             output.WriteLine($"created_box_id={id}");
             """;
+
+        private static ToolCallRequest ToolCall(string tool, Dictionary<string, object?> arguments) =>
+            new()
+            {
+                Tool = tool,
+                Arguments = arguments
+            };
+
+        private static string WithTool(string visibleText, ToolCallRequest call)
+        {
+            var envelope = new ToolCallEnvelope
+            {
+                ToolCalls = [call]
+            };
+            return $"""
+                {visibleText}
+                <rhino-agent>{JsonSerializer.Serialize(envelope, JsonOptions.Loose)}</rhino-agent>
+                """;
+        }
+    }
+
+    private sealed class ScriptedViewportCaptureProvider : IAgentProvider
+    {
+        private readonly List<string> _prompts = [];
+        private int _turn;
+
+        public AgentProviderKind Kind => AgentProviderKind.Codex;
+        public string DisplayName => "Scripted viewport-capture self-test provider";
+        public AgentProviderProcessMode ProcessMode => AgentProviderProcessMode.Stateless;
+        public IReadOnlyList<string> Prompts => _prompts;
+        public bool ObservedCaptureSuccess { get; private set; }
+        public bool ObservedPixelSummary { get; private set; }
+        public string? ObservedImagePath { get; private set; }
+        public string? ObservedManifestPath { get; private set; }
+
+        public Task<AgentProviderResult> RunPromptAsync(
+            string prompt,
+            Action<AgentProgress> progress,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _prompts.Add(prompt);
+            _turn++;
+            progress(new AgentProgress($"scripted viewport-capture self-test turn {_turn}"));
+
+            var text = _turn switch
+            {
+                1 => WithTool(
+                    "I will capture the selected box from the active Rhino viewport.",
+                    ToolCall("capture_viewport", new Dictionary<string, object?>
+                    {
+                        ["views"] = "active",
+                        ["display_mode"] = "shaded",
+                        ["fit"] = "extents",
+                        ["width"] = 1024,
+                        ["height"] = 768,
+                        ["draw_grid"] = false,
+                        ["draw_axes"] = false,
+                        ["selected_only"] = false
+                    })),
+                _ => ObserveCaptureAndRespond(prompt)
+            };
+
+            return Task.FromResult(new AgentProviderResult(
+                text,
+                "self-test",
+                "scripted-viewport-capture",
+                null,
+                0,
+                ""));
+        }
+
+        public void Reset()
+        {
+            _turn = 0;
+            _prompts.Clear();
+            ObservedCaptureSuccess = false;
+            ObservedPixelSummary = false;
+            ObservedImagePath = null;
+            ObservedManifestPath = null;
+        }
+
+        public void Dispose()
+        {
+        }
+
+        private string ObserveCaptureAndRespond(string prompt)
+        {
+            ObservedCaptureSuccess = prompt.Contains("- tool: capture_viewport", StringComparison.OrdinalIgnoreCase)
+                && prompt.Contains("success: True", StringComparison.OrdinalIgnoreCase);
+            ObservedPixelSummary = prompt.Contains("nonBackgroundRatio", StringComparison.OrdinalIgnoreCase);
+            ObservedManifestPath = ExtractJsonStringProperty(prompt, "manifestPath");
+            ObservedImagePath = ExtractFirstArrayString(prompt, "imagePaths");
+
+            return ObservedCaptureSuccess && ObservedPixelSummary
+                ? "The viewport capture succeeded. The returned image and manifest show a nonblank visual capture of the selected box, so the visual check is usable."
+                : "The viewport capture did not provide enough image metadata to verify the selected box visually.";
+        }
+
+        private static string? ExtractJsonStringProperty(string text, string propertyName)
+        {
+            var match = Regex.Match(
+                text,
+                $"\"{Regex.Escape(propertyName)}\"\\s*:\\s*\"((?:\\\\.|[^\"])*)\"",
+                RegexOptions.IgnoreCase);
+            return match.Success ? DecodeJsonString(match.Groups[1].Value) : null;
+        }
+
+        private static string? ExtractFirstArrayString(string text, string propertyName)
+        {
+            var match = Regex.Match(
+                text,
+                $"\"{Regex.Escape(propertyName)}\"\\s*:\\s*\\[\\s*\"((?:\\\\.|[^\"])*)\"",
+                RegexOptions.IgnoreCase);
+            return match.Success ? DecodeJsonString(match.Groups[1].Value) : null;
+        }
+
+        private static string? DecodeJsonString(string escaped)
+        {
+            try
+            {
+                return JsonSerializer.Deserialize<string>($"\"{escaped}\"");
+            }
+            catch
+            {
+                return null;
+            }
+        }
 
         private static ToolCallRequest ToolCall(string tool, Dictionary<string, object?> arguments) =>
             new()
