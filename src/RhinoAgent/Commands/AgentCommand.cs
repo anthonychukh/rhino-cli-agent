@@ -40,7 +40,7 @@ public sealed class AgentCommand : Command
 
         using (provider)
         {
-            var session = new AgentSession(doc, config, provider, services.ToolHost, services.Approvals);
+            var session = new AgentSession(doc, config, provider, services.ToolHost, services.Approvals, services.MemoryUpdater);
             while (true)
             {
                 CommandLineUi.Separator();

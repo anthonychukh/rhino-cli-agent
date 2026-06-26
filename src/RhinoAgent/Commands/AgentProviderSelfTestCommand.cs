@@ -149,7 +149,8 @@ public sealed class AgentProviderSelfTestCommand : Command
             WorkingDirectory = source.WorkingDirectory,
             MaxToolRounds = 1,
             ShowDebugMessages = source.ShowDebugMessages,
-            ShowUsageMessages = source.ShowUsageMessages
+            ShowUsageMessages = source.ShowUsageMessages,
+            EnableDocumentMemory = false
         };
 
     private static void WriteResult(string outputPath, object payload)

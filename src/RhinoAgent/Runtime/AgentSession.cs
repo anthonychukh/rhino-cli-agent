@@ -1,5 +1,6 @@
 using System.Text;
 using Rhino;
+using RhinoAgent.Memory;
 using RhinoAgent.Providers;
 using RhinoAgent.Tools;
 
@@ -12,6 +13,7 @@ public sealed class AgentSession
     private readonly IAgentProvider _provider;
     private readonly RhinoToolHost _toolHost;
     private readonly ApprovalService _approvals;
+    private readonly AgentMemoryUpdateService? _memoryUpdater;
     private readonly List<(string Role, string Text)> _history = [];
 
     public AgentSession(
@@ -19,13 +21,15 @@ public sealed class AgentSession
         AgentConfig config,
         IAgentProvider provider,
         RhinoToolHost toolHost,
-        ApprovalService approvals)
+        ApprovalService approvals,
+        AgentMemoryUpdateService? memoryUpdater = null)
     {
         _doc = doc;
         _config = config;
         _provider = provider;
         _toolHost = toolHost;
         _approvals = approvals;
+        _memoryUpdater = memoryUpdater;
     }
 
     public void Clear()
@@ -116,7 +120,7 @@ public sealed class AgentSession
                 Debug($"Provider exited with code {providerResult.ExitCode}.");
                 if (!string.IsNullOrWhiteSpace(providerResult.StandardError))
                     Debug(providerResult.StandardError.Trim());
-                return BuildResult(
+                var result = BuildResult(
                     false,
                     providerResult,
                     visibleTranscript,
@@ -124,6 +128,8 @@ public sealed class AgentSession
                     totalToolResults,
                     false,
                     $"Provider exited with code {providerResult.ExitCode}.");
+                await TryUpdateMemoryAsync(userMessage, result, cancellationToken);
+                return result;
             }
 
             var parsed = AgentResponseParser.Parse(providerResult.Text);
@@ -144,7 +150,7 @@ public sealed class AgentSession
             if (parsed.ToolCalls.Count == 0)
             {
                 diagnostics?.Invoke("turn-complete-no-tools");
-                return BuildResult(
+                var result = BuildResult(
                     true,
                     providerResult,
                     visibleTranscript,
@@ -152,6 +158,8 @@ public sealed class AgentSession
                     totalToolResults,
                     false,
                     null);
+                await TryUpdateMemoryAsync(userMessage, result, cancellationToken);
+                return result;
             }
 
             toolResults.Clear();
@@ -187,7 +195,7 @@ public sealed class AgentSession
             if (round == maxRounds - 1 && CompletedActionTool(toolResults))
             {
                 diagnostics?.Invoke("turn-complete-final-tool-success");
-                return BuildResult(
+                var result = BuildResult(
                     true,
                     providerResult,
                     visibleTranscript,
@@ -195,11 +203,13 @@ public sealed class AgentSession
                     totalToolResults,
                     false,
                     null);
+                await TryUpdateMemoryAsync(userMessage, result, cancellationToken);
+                return result;
             }
         }
 
         Debug("Agent stopped after the configured tool-round limit. Raise maxToolRounds in config.json if needed.");
-        return BuildResult(
+        var stoppedResult = BuildResult(
             false,
             lastProviderResult,
             visibleTranscript,
@@ -207,6 +217,32 @@ public sealed class AgentSession
             totalToolResults,
             true,
             "Agent stopped after the configured tool-round limit.");
+        await TryUpdateMemoryAsync(userMessage, stoppedResult, cancellationToken);
+        return stoppedResult;
+    }
+
+    private async Task TryUpdateMemoryAsync(string userMessage, AgentTurnResult result, CancellationToken cancellationToken)
+    {
+        if (_memoryUpdater is null)
+            return;
+
+        try
+        {
+            var update = await _memoryUpdater.UpdateAfterTurnAsync(userMessage, result, cancellationToken)
+                .ConfigureAwait(false);
+            if (update.Updated)
+                CommandLineUi.Debug($"Memory updated: {update.Reason}. Use /memory undo to revert.");
+            else if (_config.ShowDebugMessages && !string.IsNullOrWhiteSpace(update.Message))
+                CommandLineUi.Debug($"Memory unchanged: {update.Message}");
+        }
+        catch (OperationCanceledException)
+        {
+            CommandLineUi.Debug("Memory update skipped: canceled.");
+        }
+        catch (Exception ex)
+        {
+            CommandLineUi.Debug($"Memory update skipped: {ex.Message}");
+        }
     }
 
     private void PrintUsage(AgentProviderResult result)
