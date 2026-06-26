@@ -6,17 +6,26 @@ namespace RhinoAgent.Providers;
 
 public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationResumeProvider
 {
+    private readonly bool _isolateSession;
     private string? _sessionId;
     private string? _resumeSessionId;
     private bool _continueLatestConversation;
 
-    public ClaudeCliProvider(string executablePath, string model, AgentPermissionMode permissionMode, string workingDirectory)
+    public ClaudeCliProvider(
+        string executablePath,
+        string model,
+        AgentPermissionMode permissionMode,
+        string workingDirectory,
+        bool isolateSession = false)
         : base(executablePath, model, permissionMode, workingDirectory)
     {
+        _isolateSession = isolateSession;
     }
 
     public override AgentProviderKind Kind => AgentProviderKind.Claude;
-    public override string DisplayName => $"Claude Code ({Model}, {PermissionMode}, persistent)";
+    public override string DisplayName => _isolateSession
+        ? $"Claude Code ({Model}, {PermissionMode}, isolated)"
+        : $"Claude Code ({Model}, {PermissionMode}, persistent)";
     public string? ActiveSessionId => _sessionId ?? ClaudeSessionStore.LoadForWorkingDirectory(WorkingDirectory)?.SessionId;
 
     public bool TryContinueLatestConversation(out string message)
@@ -56,6 +65,12 @@ public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationRe
             "--model", Model,
             "--permission-mode", MapPermissionMode(PermissionMode)
         };
+
+        if (_isolateSession)
+        {
+            args.Add("--no-session-persistence");
+            return args;
+        }
 
         var savedSession = ClaudeSessionStore.LoadForWorkingDirectory(WorkingDirectory);
         if (!string.IsNullOrWhiteSpace(_resumeSessionId))

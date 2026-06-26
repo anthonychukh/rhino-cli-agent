@@ -67,6 +67,9 @@ public static class SlashCommands
 
                 LoginFlow.Run(config, services, LoginFlow.TryParseProvider(arg, out var provider) ? provider : null);
                 return SlashCommandResult.Handled;
+            case "/memory":
+                AgentMemorySlashCommands.Handle(arg, config, services);
+                return SlashCommandResult.Handled;
             case "/model":
                 SetModel(config, arg);
                 return SlashCommandResult.Handled;
@@ -131,6 +134,7 @@ public static class SlashCommands
             "  /timeout <seconds>|off   Limit a provider turn so Agent does not wait forever",
             "  /skill ...                List, use, create, export, or manage RhinoAgent skills",
             "  /run <command>            Run a Rhino command manually while in Agent",
+            "  /memory <command>         Show, edit, refresh, import/export, or undo document memory",
             "  ! <command>               Pass a command or alias directly to Rhino",
             "  _Command / -Command       Native Rhino command passthrough",
             "  Line / user aliases       Direct command and alias passthrough",
@@ -401,6 +405,7 @@ public static class SlashCommands
             $"Provider timeout: {FormatTimeout(config.ProviderTurnTimeoutSeconds)}",
             $"Debug messages: {(config.ShowDebugMessages ? "on" : "off")}",
             $"Usage messages: {(config.ShowUsageMessages ? "on" : "off")}",
+            $"Document memory: {(config.EnableDocumentMemory ? "on" : "off")}",
             $"Claude model: {config.ClaudeModel}",
             $"Codex model: {config.CodexModel}",
             $"Codex effort: {FormatReasoningEffort(config.CodexReasoningEffort)}",

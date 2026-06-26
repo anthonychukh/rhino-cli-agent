@@ -36,6 +36,30 @@ public sealed class ProviderFactory
         return null;
     }
 
+    public IAgentProvider? ResolveMaintenanceProvider(AgentConfig config)
+    {
+        AgentProviderKind[] choices = config.Provider switch
+        {
+            AgentProviderKind.Claude => [AgentProviderKind.Claude],
+            AgentProviderKind.Codex => [AgentProviderKind.Codex],
+            _ => [AgentProviderKind.Codex, AgentProviderKind.Claude]
+        };
+
+        foreach (var provider in choices)
+        {
+            var status = _auth.GetStatus(provider, GetConfiguredPath(provider));
+            if (status is not { ExecutableFound: true, LoggedIn: true })
+                continue;
+
+            var cwd = WorkingDirectoryResolver.Resolve(_doc, config.WorkingDirectory);
+            return provider == AgentProviderKind.Codex
+                ? new CodexCliProvider(status.ExecutablePath!, config.CodexModel, AgentPermissionMode.Ask, cwd)
+                : new ClaudeCliProvider(status.ExecutablePath!, config.ClaudeModel, AgentPermissionMode.Ask, cwd, isolateSession: true);
+        }
+
+        return null;
+    }
+
     public IEnumerable<ProviderStatus> GetProviderStatuses()
     {
         yield return _auth.GetStatus(AgentProviderKind.Claude, _config.ClaudePath);

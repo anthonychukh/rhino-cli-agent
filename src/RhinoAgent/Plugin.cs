@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Rhino;
 using Rhino.PlugIns;
+using RhinoAgent.UI;
 
 namespace RhinoAgent;
 
@@ -16,8 +17,16 @@ public sealed class RhinoAgentPlugin : PlugIn
 
     protected override LoadReturnCode OnLoad(ref string errorMessage)
     {
+        AgentMemoryPanel.Register(this);
         RhinoApp.WriteLine("RhinoAgent loaded. Type Agent to start an AI command-line session.");
         return LoadReturnCode.Success;
+    }
+
+    protected override void OnShutdown()
+    {
+        AgentMemoryPanel.Shutdown();
+        Instance = null;
+        base.OnShutdown();
     }
 
     public override PlugInLoadTime LoadTime => PlugInLoadTime.AtStartup;

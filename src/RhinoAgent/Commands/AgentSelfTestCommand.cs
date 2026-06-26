@@ -7,6 +7,7 @@ using Rhino.Commands;
 using Rhino.DocObjects;
 using Rhino.Geometry;
 using RhinoAgent.Config;
+using RhinoAgent.Memory;
 using RhinoAgent.Providers;
 using RhinoAgent.Runtime;
 using RhinoAgent.Skills;
@@ -58,6 +59,8 @@ public sealed class AgentSelfTestCommand : Command
 
         var skillSystem = RunSkillSystemSelfTest(doc);
         success = success && skillSystem.Ok;
+        var documentMemory = RunDocumentMemoryRoundTrip(doc);
+        success = success && documentMemory.Ok;
 
         var payload = new
         {
@@ -97,9 +100,11 @@ public sealed class AgentSelfTestCommand : Command
             scriptedToolRecovery,
             viewportCaptureAwareness,
             skillSystem,
+            documentMemory,
             commands = new[]
             {
                 "Agent",
+                "AgentMemory",
                 "AgentLogin",
                 "AgentStatus",
                 "AgentConfig",
@@ -308,6 +313,7 @@ public sealed class AgentSelfTestCommand : Command
             {
                 PermissionMode = AgentPermissionMode.FullAccess,
                 ProviderProcessMode = AgentProviderProcessMode.Stateless,
+                EnableDocumentMemory = false,
                 MaxToolRounds = 3
             };
             var toolHost = new RhinoToolHost(doc, config);
@@ -406,6 +412,7 @@ public sealed class AgentSelfTestCommand : Command
             {
                 PermissionMode = AgentPermissionMode.FullAccess,
                 ProviderProcessMode = AgentProviderProcessMode.Stateless,
+                EnableDocumentMemory = false,
                 MaxToolRounds = 4
             };
             var toolHost = new RhinoToolHost(doc, config);
@@ -489,6 +496,190 @@ public sealed class AgentSelfTestCommand : Command
             expected.ToString(),
             maxDeviation,
             tolerance);
+    }
+
+    private static DocumentMemoryResult RunDocumentMemoryRoundTrip(RhinoDoc doc)
+    {
+        var before = AgentMemoryStore.Load(doc);
+        var tempDir = Path.Combine(Path.GetTempPath(), "RhinoAgent", "memory-self-test", Guid.NewGuid().ToString("N"));
+        var exportPath = Path.Combine(tempDir, "exported-memory.md");
+        var importPath = Path.Combine(tempDir, "imported-memory.md");
+
+        try
+        {
+            Directory.CreateDirectory(tempDir);
+            AgentMemoryStore.Clear(doc);
+
+            var created = AgentMemoryStore.EnsureCreated(doc);
+            var createOk = created.Exists
+                && created.Enabled
+                && created.Markdown.Contains("## Project Intent", StringComparison.Ordinal)
+                && created.Markdown.Contains(AgentMemoryMarkdown.AgentNotesBegin, StringComparison.Ordinal);
+
+            var customMarkdown = $$"""
+            # RhinoAgent Memory: Self-Test
+
+            ## Project Intent
+            - Preserve this user-authored intent.
+
+            ## Modeling Conventions
+            - Keep self-test geometry disposable.
+
+            ## Constraints
+            - Do not store live object counts here.
+
+            ## Decisions
+            - Memory lives in the active .3dm document.
+
+            ## Current Tasks
+            - Verify document memory round trips.
+
+            ## Agent Notes
+            {{AgentMemoryMarkdown.AgentNotesBegin}}
+            - Old generated note.
+            {{AgentMemoryMarkdown.AgentNotesEnd}}
+            """;
+            var saved = AgentMemoryStore.SaveUserMarkdown(doc, customMarkdown, "Self-test save.");
+            var generated = AgentMemoryStore.ApplyGeneratedUpdate(
+                doc,
+                "- Generated durable note from self-test.",
+                "Self-test compact memory summary.",
+                "Self-test generated update.");
+            var afterGenerated = AgentMemoryStore.Load(doc);
+            var userSectionPreserved = afterGenerated.Markdown.Contains("Preserve this user-authored intent.", StringComparison.Ordinal);
+            var generatedSectionUpdated = afterGenerated.Markdown.Contains("Generated durable note from self-test.", StringComparison.Ordinal)
+                && !afterGenerated.Markdown.Contains("Old generated note.", StringComparison.Ordinal);
+            var summaryStored = afterGenerated.PromptSummary == "Self-test compact memory summary.";
+            var historyCaptured = afterGenerated.History.Count > 0;
+
+            var undo = AgentMemoryStore.Undo(doc, 1);
+            var afterUndo = AgentMemoryStore.Load(doc);
+            var undoOk = undo.Changed
+                && afterUndo.Markdown.Contains("Old generated note.", StringComparison.Ordinal)
+                && afterUndo.Markdown.Contains("Preserve this user-authored intent.", StringComparison.Ordinal);
+
+            var exportedPath = AgentMemoryStore.ExportMarkdown(doc, exportPath);
+            var exportOk = File.Exists(exportedPath)
+                && File.ReadAllText(exportedPath).Contains("Preserve this user-authored intent.", StringComparison.Ordinal);
+
+            File.WriteAllText(importPath, customMarkdown.Replace("Preserve this user-authored intent.", "Imported intent."));
+            var imported = AgentMemoryStore.ImportMarkdown(doc, importPath);
+            var importOk = imported.Changed && AgentMemoryStore.Load(doc).Markdown.Contains("Imported intent.", StringComparison.Ordinal);
+
+            var promptSmall = AgentMemoryPromptFormatter.FormatForPrompt(doc);
+            var promptSmallOk = promptSmall.Contains("Embedded RhinoAgent memory", StringComparison.Ordinal)
+                && promptSmall.Contains("Imported intent.", StringComparison.Ordinal);
+            var promptPackage = AgentPromptBuilder.Build(
+                doc,
+                new AgentConfig { EnableDocumentMemory = true },
+                [("user", "please update memory")],
+                [],
+                "test tools");
+            var promptGuardrailOk = promptPackage.Contains("canonical project memory is embedded in the active Rhino .3dm document", StringComparison.Ordinal)
+                && promptPackage.Contains("do not create or edit AGENTS.md, MEMORY.md, or any sidecar markdown file with write_file", StringComparison.Ordinal)
+                && promptPackage.Contains("private RhinoAgent maintenance pass updates the embedded memory", StringComparison.Ordinal);
+
+            var largeMarkdown = customMarkdown + System.Environment.NewLine + new string('x', AgentMemoryMarkdown.PromptMemoryCharacterLimit + 200);
+            AgentMemoryStore.SaveUserMarkdown(doc, largeMarkdown, "Self-test large memory.");
+            var promptLarge = AgentMemoryPromptFormatter.FormatForPrompt(doc);
+            var promptLargeOk = promptLarge.Contains("larger than the prompt limit", StringComparison.Ordinal)
+                && promptLarge.Contains("compact memory summary", StringComparison.Ordinal);
+
+            AgentMemoryStore.SaveUserMarkdown(doc, customMarkdown, "Self-test maintenance base.");
+            var maintenanceUpdate = new AgentMemoryUpdateService(
+                    doc,
+                    new AgentConfig { EnableDocumentMemory = true, ShowDebugMessages = false },
+                    () => new ScriptedMemoryProvider(true))
+                .RefreshAsync()
+                .GetAwaiter()
+                .GetResult();
+            var afterMaintenance = AgentMemoryStore.Load(doc);
+            var maintenanceOk = maintenanceUpdate.Updated
+                && afterMaintenance.Markdown.Contains("Scripted maintenance note.", StringComparison.Ordinal)
+                && afterMaintenance.Markdown.Contains("Preserve this user-authored intent.", StringComparison.Ordinal);
+
+            var beforeNoUpdateHash = afterMaintenance.CurrentHash;
+            var noUpdate = new AgentMemoryUpdateService(
+                    doc,
+                    new AgentConfig { EnableDocumentMemory = true, ShowDebugMessages = false },
+                    () => new ScriptedMemoryProvider(false))
+                .RefreshAsync()
+                .GetAwaiter()
+                .GetResult();
+            var afterNoUpdate = AgentMemoryStore.Load(doc);
+            var noUpdateOk = !noUpdate.Updated && afterNoUpdate.CurrentHash == beforeNoUpdateHash;
+
+            var disabled = AgentMemoryStore.SetEnabled(doc, false);
+            var disabledPrompt = AgentMemoryPromptFormatter.FormatForPrompt(doc);
+            var disabledOk = disabled.Changed
+                && disabledPrompt.Contains("disabled", StringComparison.OrdinalIgnoreCase);
+
+            var ok = createOk
+                && saved.Changed
+                && generated.Changed
+                && userSectionPreserved
+                && generatedSectionUpdated
+                && summaryStored
+                && historyCaptured
+                && undoOk
+                && exportOk
+                && importOk
+                && promptSmallOk
+                && promptGuardrailOk
+                && promptLargeOk
+                && maintenanceOk
+                && noUpdateOk
+                && disabledOk;
+
+            return new DocumentMemoryResult(
+                ok,
+                createOk,
+                saved.Changed,
+                generated.Changed,
+                userSectionPreserved,
+                generatedSectionUpdated,
+                summaryStored,
+                historyCaptured,
+                undoOk,
+                exportOk,
+                importOk,
+                promptSmallOk,
+                promptGuardrailOk,
+                promptLargeOk,
+                maintenanceOk,
+                noUpdateOk,
+                disabledOk,
+                exportedPath,
+                null);
+        }
+        catch (Exception ex)
+        {
+            return new DocumentMemoryResult(
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                exportPath,
+                ex.Message);
+        }
+        finally
+        {
+            AgentMemoryStore.Restore(doc, before);
+            TryDeleteDirectory(tempDir);
+        }
     }
 
     private static void DeleteObjectsCreatedBySelfTest(RhinoDoc doc, HashSet<Guid> beforeIds, string marker)
@@ -641,6 +832,27 @@ public sealed class AgentSelfTestCommand : Command
         bool TurnSuccess,
         int ProviderPromptCount,
         bool PromptHadSkill,
+        string? Error);
+
+    private sealed record DocumentMemoryResult(
+        bool Ok,
+        bool CreateOk,
+        bool SaveChanged,
+        bool GeneratedChanged,
+        bool UserSectionPreserved,
+        bool GeneratedSectionUpdated,
+        bool SummaryStored,
+        bool HistoryCaptured,
+        bool UndoOk,
+        bool ExportOk,
+        bool ImportOk,
+        bool PromptSmallOk,
+        bool PromptGuardrailOk,
+        bool PromptLargeOk,
+        bool MaintenanceOk,
+        bool NoUpdateOk,
+        bool DisabledOk,
+        string ExportPath,
         string? Error);
 
     private sealed class ScriptedToolRecoveryProvider : IAgentProvider
@@ -917,4 +1129,43 @@ public sealed class AgentSelfTestCommand : Command
                 """;
         }
     }
+
+    private sealed class ScriptedMemoryProvider : IAgentProvider
+    {
+        private readonly bool _update;
+
+        public ScriptedMemoryProvider(bool update)
+        {
+            _update = update;
+        }
+
+        public AgentProviderKind Kind => AgentProviderKind.Codex;
+        public string DisplayName => "Scripted memory self-test provider";
+        public AgentProviderProcessMode ProcessMode => AgentProviderProcessMode.Stateless;
+
+        public Task<AgentProviderResult> RunPromptAsync(
+            string prompt,
+            Action<AgentProgress> progress,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var text = _update
+                ? """
+                  {"update":true,"agentNotes":"- Scripted maintenance note.","summary":"Scripted maintenance summary.","reason":"Scripted memory self-test update."}
+                  """
+                : """
+                  {"update":false,"agentNotes":"","summary":"","reason":"No durable memory changes in scripted test."}
+                  """;
+            return Task.FromResult(new AgentProviderResult(text, "self-test", "scripted-memory", null, 0, ""));
+        }
+
+        public void Reset()
+        {
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
 }
