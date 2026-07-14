@@ -39,7 +39,16 @@ public sealed class ApprovalService
         return host.IsHighImpact(call.Tool);
     }
 
-    public bool PromptForApproval(ToolCallRequest call, RhinoToolHost host)
+    public bool PromptForApproval(
+        ToolCallRequest call,
+        RhinoToolHost host,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return RhinoUiDispatcher.Invoke(() => PromptForApprovalOnUiThread(call, host));
+    }
+
+    private bool PromptForApprovalOnUiThread(ToolCallRequest call, RhinoToolHost host)
     {
         var preview = host.DescribeApproval(call);
         if (!string.IsNullOrWhiteSpace(preview))

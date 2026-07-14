@@ -99,7 +99,14 @@ public sealed class AgentSession
         var maxRounds = Math.Max(1, _config.MaxToolRounds);
         for (var round = 0; round < maxRounds; round++)
         {
-            var prompt = AgentPromptBuilder.Build(_doc, _config, _history, toolResults, _toolHost.DescribeTools(), selectedSkills);
+            var prompt = await RhinoUiDispatcher.InvokeAsync(
+                () => AgentPromptBuilder.Build(
+                    _doc,
+                    _config,
+                    _history,
+                    toolResults,
+                    _toolHost.DescribeTools(),
+                    selectedSkills));
             diagnostics?.Invoke($"prompt-built: {prompt.Length} chars");
             WritePromptPackageToDebugger(prompt, round, maxRounds);
             diagnostics?.Invoke("thinking-write-start");
@@ -191,7 +198,8 @@ public sealed class AgentSession
                     continue;
                 }
 
-                if (_approvals.RequiresPrompt(call, _toolHost) && !_approvals.PromptForApproval(call, _toolHost))
+                if (_approvals.RequiresPrompt(call, _toolHost)
+                    && !_approvals.PromptForApproval(call, _toolHost, cancellationToken))
                 {
                     toolResults.Add(new ToolExecutionResult(call.Tool, false, "User denied tool call.", false, true));
                     diagnostics?.Invoke($"tool-denied: {call.Tool}");
@@ -199,7 +207,7 @@ public sealed class AgentSession
                 }
 
                 Debug($"Running tool: {call.Tool}");
-                var result = await _toolHost.ExecuteAsync(call);
+                var result = await _toolHost.ExecuteAsync(call, cancellationToken);
                 Debug(result.Success ? $"Tool complete: {call.Tool}" : $"Tool failed: {call.Tool}");
                 if (!string.IsNullOrWhiteSpace(result.Output))
                     Debug(TrimForCommandLine(result.Output));

@@ -14,9 +14,18 @@ public sealed class RhinoToolHost
     private static readonly HttpClient HttpClient = CreateHttpClient();
 
     private readonly RhinoDoc _doc;
-    private readonly AgentConfig _config;
     private readonly SkillStore _skillStore;
+    private readonly string _workingDirectory;
     private readonly Dictionary<string, Func<ToolCallRequest, Task<ToolExecutionResult>>> _tools;
+    private readonly HashSet<string> _uiThreadTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "document_summary",
+        "list_objects",
+        "run_command",
+        "run_python",
+        "execute_csharp",
+        "capture_viewport"
+    };
     private readonly HashSet<string> _highImpactTools = new(StringComparer.OrdinalIgnoreCase)
     {
         "run_command",
@@ -39,8 +48,8 @@ public sealed class RhinoToolHost
     public RhinoToolHost(RhinoDoc doc, AgentConfig config, SkillStore? skillStore = null)
     {
         _doc = doc;
-        _config = config;
         _skillStore = skillStore ?? new SkillStore();
+        _workingDirectory = Providers.WorkingDirectoryResolver.Resolve(doc, config.WorkingDirectory);
         _tools = new(StringComparer.OrdinalIgnoreCase)
         {
             ["document_summary"] = DocumentSummary,
@@ -99,10 +108,21 @@ public sealed class RhinoToolHost
         };
     }
 
-    public Task<ToolExecutionResult> ExecuteAsync(ToolCallRequest call)
+    public Task<ToolExecutionResult> ExecuteAsync(
+        ToolCallRequest call,
+        CancellationToken cancellationToken = default)
     {
+        if (cancellationToken.IsCancellationRequested)
+            return Task.FromCanceled<ToolExecutionResult>(cancellationToken);
+
         if (!_tools.TryGetValue(call.Tool, out var tool))
             return Task.FromResult(new ToolExecutionResult(call.Tool, false, $"Unknown tool: {call.Tool}", false, true));
+
+        if (_uiThreadTools.Contains(call.Tool))
+        {
+            return RhinoUiDispatcher.InvokeAsync(
+                () => tool(call).GetAwaiter().GetResult());
+        }
 
         return tool(call);
     }
@@ -303,8 +323,7 @@ public sealed class RhinoToolHost
         if (Path.IsPathRooted(path))
             return Path.GetFullPath(path);
 
-        var baseDir = Providers.WorkingDirectoryResolver.Resolve(_doc, _config.WorkingDirectory);
-        return Path.GetFullPath(Path.Combine(baseDir, path));
+        return Path.GetFullPath(Path.Combine(_workingDirectory, path));
     }
 
     private static Task<ToolExecutionResult> Success(string tool, string output) =>

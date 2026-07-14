@@ -31,9 +31,11 @@ public sealed class AgentMemoryUpdateService
         if (!LooksPotentiallyDurable(userMessage, result))
             return new AgentMemoryMaintenanceResult(false, "Turn did not look durable enough for memory.", "");
 
+        var prompt = await RhinoUiDispatcher.InvokeAsync(
+            () => BuildTurnMaintenancePrompt(userMessage, result)).ConfigureAwait(false);
         return await RunMaintenanceAsync(
             "automatic update after meaningful turn",
-            BuildTurnMaintenancePrompt(userMessage, result),
+            prompt,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -42,9 +44,10 @@ public sealed class AgentMemoryUpdateService
         if (!_config.EnableDocumentMemory)
             return new AgentMemoryMaintenanceResult(false, "Document memory is disabled in config.", "");
 
+        var prompt = await RhinoUiDispatcher.InvokeAsync(BuildRefreshPrompt).ConfigureAwait(false);
         return await RunMaintenanceAsync(
             "manual /memory refresh",
-            BuildRefreshPrompt(),
+            prompt,
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -53,14 +56,19 @@ public sealed class AgentMemoryUpdateService
         string prompt,
         CancellationToken cancellationToken)
     {
-        var state = AgentMemoryStore.EnsureCreated(_doc);
+        var state = await RhinoUiDispatcher.InvokeAsync(
+            () => AgentMemoryStore.EnsureCreated(_doc)).ConfigureAwait(false);
         if (!state.Enabled)
             return new AgentMemoryMaintenanceResult(false, "RhinoAgent memory is off for this document.", "");
 
         using var provider = _resolveProvider();
         if (provider is null)
         {
-            var save = AgentMemoryStore.SaveUserMarkdown(_doc, state.Markdown, "Refreshed memory summary without a maintenance provider.");
+            var save = await RhinoUiDispatcher.InvokeAsync(
+                () => AgentMemoryStore.SaveUserMarkdown(
+                    _doc,
+                    state.Markdown,
+                    "Refreshed memory summary without a maintenance provider.")).ConfigureAwait(false);
             return new AgentMemoryMaintenanceResult(save.Changed, "No maintenance provider was available; refreshed deterministic summary.", save.State.LastUpdateReason);
         }
 
@@ -82,11 +90,12 @@ public sealed class AgentMemoryUpdateService
         if (!response.Update)
             return new AgentMemoryMaintenanceResult(false, FirstNonEmpty(response.Reason, "No durable memory changes."), response.Reason);
 
-        var saveResult = AgentMemoryStore.ApplyGeneratedUpdate(
-            _doc,
-            response.AgentNotes,
-            response.Summary,
-            FirstNonEmpty(response.Reason, reason));
+        var saveResult = await RhinoUiDispatcher.InvokeAsync(
+            () => AgentMemoryStore.ApplyGeneratedUpdate(
+                _doc,
+                response.AgentNotes,
+                response.Summary,
+                FirstNonEmpty(response.Reason, reason))).ConfigureAwait(false);
         return new AgentMemoryMaintenanceResult(saveResult.Changed, saveResult.Message, saveResult.State.LastUpdateReason);
     }
 

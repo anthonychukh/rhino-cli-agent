@@ -92,21 +92,28 @@ public sealed class AgentCommand : Command
         return result == Rhino.Input.GetResult.String ? getter.StringResult() : "";
     }
 
-    private static void RunAgentTurn(AgentSession session, string input)
+    private static void RunAgentTurn(
+        AgentSession session,
+        string input,
+        IReadOnlyList<string>? forcedSkillNames = null)
     {
+        var timeoutSeconds = Math.Max(0, AgentConfigStore.Load().ProviderTurnTimeoutSeconds);
+        using var timeoutCancellation = timeoutSeconds > 0
+            ? new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds))
+            : new CancellationTokenSource();
+
         try
         {
-            var timeoutSeconds = Math.Max(0, AgentConfigStore.Load().ProviderTurnTimeoutSeconds);
-            using var cancellation = timeoutSeconds > 0
-                ? new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds))
-                : new CancellationTokenSource();
-
-            session.RunUserTurnAsync(input, cancellation.Token).GetAwaiter().GetResult();
+            RhinoTaskPump.Run(
+                cancellationToken => session.RunUserTurnAsync(
+                    input,
+                    cancellationToken,
+                    forcedSkillNames: forcedSkillNames),
+                timeoutCancellation.Token);
         }
         catch (OperationCanceledException)
         {
-            var timeoutSeconds = Math.Max(0, AgentConfigStore.Load().ProviderTurnTimeoutSeconds);
-            CommandLineUi.Debug(timeoutSeconds > 0
+            CommandLineUi.Debug(timeoutSeconds > 0 && timeoutCancellation.IsCancellationRequested
                 ? $"Agent turn timed out after {timeoutSeconds} seconds. Use /timeout <seconds> to adjust or /timeout off to disable."
                 : "Agent turn was canceled.");
         }

@@ -184,7 +184,11 @@ public static class SlashCommands
                     CommandLineUi.Debug($"Usage: /skill {subcommand} <brief>");
                     return;
                 }
-                RunAgentPrompt(config, session, BuildSkillCreationPrompt(subcommand, brief), ["skill-writer"]);
+                RunAgentPrompt(
+                    config,
+                    session,
+                    BuildSkillCreationPrompt(subcommand, brief),
+                    ["skill-writer"]);
                 return;
             case "enable":
             case "disable":
@@ -358,21 +362,23 @@ public static class SlashCommands
         string prompt,
         IReadOnlyList<string>? forcedSkillNames = null)
     {
+        var timeoutSeconds = Math.Max(0, config.ProviderTurnTimeoutSeconds);
+        using var timeoutCancellation = timeoutSeconds > 0
+            ? new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds))
+            : new CancellationTokenSource();
+
         try
         {
-            var timeoutSeconds = Math.Max(0, config.ProviderTurnTimeoutSeconds);
-            using var cancellation = timeoutSeconds > 0
-                ? new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds))
-                : new CancellationTokenSource();
-
-            session.RunUserTurnAsync(prompt, cancellation.Token, forcedSkillNames: forcedSkillNames)
-                .GetAwaiter()
-                .GetResult();
+            RhinoTaskPump.Run(
+                cancellationToken => session.RunUserTurnAsync(
+                    prompt,
+                    cancellationToken,
+                    forcedSkillNames: forcedSkillNames),
+                timeoutCancellation.Token);
         }
         catch (OperationCanceledException)
         {
-            var timeoutSeconds = Math.Max(0, config.ProviderTurnTimeoutSeconds);
-            CommandLineUi.Debug(timeoutSeconds > 0
+            CommandLineUi.Debug(timeoutSeconds > 0 && timeoutCancellation.IsCancellationRequested
                 ? $"Agent turn timed out after {timeoutSeconds} seconds. Use /timeout <seconds> to adjust or /timeout off to disable."
                 : "Agent turn was canceled.");
         }

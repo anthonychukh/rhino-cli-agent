@@ -67,13 +67,22 @@ public static class AgentMemorySlashCommands
 
     private static void Refresh(AgentConfig config, AgentServices services)
     {
+        var timeoutSeconds = Math.Max(30, config.ProviderTurnTimeoutSeconds);
+        using var timeoutCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         try
         {
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Max(30, config.ProviderTurnTimeoutSeconds)));
-            var result = services.MemoryUpdater.RefreshAsync(cancellation.Token).GetAwaiter().GetResult();
+            var result = RhinoTaskPump.Run(
+                services.MemoryUpdater.RefreshAsync,
+                timeoutCancellation.Token);
             CommandLineUi.Debug(result.Updated
                 ? $"Memory refreshed: {result.Reason}. Use /memory undo to revert."
                 : $"Memory unchanged: {result.Message}");
+        }
+        catch (OperationCanceledException)
+        {
+            CommandLineUi.Debug(timeoutCancellation.IsCancellationRequested
+                ? $"Memory refresh timed out after {timeoutSeconds} seconds."
+                : "Memory refresh was canceled.");
         }
         catch (Exception ex)
         {

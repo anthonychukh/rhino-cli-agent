@@ -22,11 +22,14 @@ public static class CommandLineUi
 
     public static void Separator()
     {
-        lock (WriteLock)
+        RhinoUiDispatcher.Post(() =>
         {
-            RhinoApp.WriteLine();
-            LastEntryKind = null;
-        }
+            lock (WriteLock)
+            {
+                RhinoApp.WriteLine();
+                LastEntryKind = null;
+            }
+        });
     }
 
     public static void Debug(string message) =>
@@ -51,14 +54,17 @@ public static class CommandLineUi
         var continuationPrefix = new string(' ', prefix.Length);
         var lines = SplitLines(NormalizeForCommandLine(message));
 
-        lock (WriteLock)
+        RhinoUiDispatcher.Post(() =>
         {
-            if (ShouldSeparate(kind))
-                RhinoApp.WriteLine();
-            for (var i = 0; i < lines.Length; i++)
-                RhinoApp.WriteLine($"{(i == 0 ? prefix : continuationPrefix)}{lines[i]}");
-            LastEntryKind = kind;
-        }
+            lock (WriteLock)
+            {
+                if (ShouldSeparate(kind))
+                    RhinoApp.WriteLine();
+                for (var i = 0; i < lines.Length; i++)
+                    RhinoApp.WriteLine($"{(i == 0 ? prefix : continuationPrefix)}{lines[i]}");
+                LastEntryKind = kind;
+            }
+        });
     }
 
     private static bool ShouldSeparate(EntryKind kind) =>
@@ -157,14 +163,17 @@ public static class CommandLineUi
 
         private static void SetPromptMessage(string message)
         {
-            try
+            RhinoUiDispatcher.Post(() =>
             {
-                RhinoApp.SetCommandPromptMessage(NormalizeForCommandLine(message));
-            }
-            catch
-            {
-                // Some automated or non-interactive Rhino sessions do not expose a prompt.
-            }
+                try
+                {
+                    RhinoApp.SetCommandPromptMessage(NormalizeForCommandLine(message));
+                }
+                catch
+                {
+                    // Some automated or non-interactive Rhino sessions do not expose a prompt.
+                }
+            });
         }
     }
 

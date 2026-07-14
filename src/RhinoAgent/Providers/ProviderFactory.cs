@@ -7,14 +7,14 @@ public sealed class ProviderFactory
     private readonly AgentConfig _config;
     private readonly CommandResolver _resolver;
     private readonly AuthService _auth;
-    private readonly RhinoDoc _doc;
+    private readonly string _workingDirectory;
 
     public ProviderFactory(AgentConfig config, CommandResolver resolver, AuthService auth, RhinoDoc doc)
     {
         _config = config;
         _resolver = resolver;
         _auth = auth;
-        _doc = doc;
+        _workingDirectory = WorkingDirectoryResolver.Resolve(doc, config.WorkingDirectory);
     }
 
     public IAgentProvider? ResolveInteractiveProvider(AgentConfig config)
@@ -51,10 +51,9 @@ public sealed class ProviderFactory
             if (status is not { ExecutableFound: true, LoggedIn: true })
                 continue;
 
-            var cwd = WorkingDirectoryResolver.Resolve(_doc, config.WorkingDirectory);
             return provider == AgentProviderKind.Codex
-                ? new CodexCliProvider(status.ExecutablePath!, config.CodexModel, AgentPermissionMode.Ask, cwd)
-                : new ClaudeCliProvider(status.ExecutablePath!, config.ClaudeModel, AgentPermissionMode.Ask, cwd, isolateSession: true);
+                ? new CodexCliProvider(status.ExecutablePath!, config.CodexModel, AgentPermissionMode.Ask, _workingDirectory)
+                : new ClaudeCliProvider(status.ExecutablePath!, config.ClaudeModel, AgentPermissionMode.Ask, _workingDirectory, isolateSession: true);
         }
 
         return null;
@@ -84,13 +83,12 @@ public sealed class ProviderFactory
 
     private IAgentProvider Create(AgentProviderKind provider, string executablePath)
     {
-        var cwd = WorkingDirectoryResolver.Resolve(_doc, _config.WorkingDirectory);
         return provider switch
         {
             AgentProviderKind.Codex when _config.ProviderProcessMode == AgentProviderProcessMode.LongRunning =>
-                new CodexAppServerProvider(executablePath, _config.CodexModel, _config.CodexReasoningEffort, _config.PermissionMode, cwd),
-            AgentProviderKind.Codex => new CodexCliProvider(executablePath, _config.CodexModel, _config.PermissionMode, cwd),
-            _ => new ClaudeCliProvider(executablePath, _config.ClaudeModel, _config.PermissionMode, cwd)
+                new CodexAppServerProvider(executablePath, _config.CodexModel, _config.CodexReasoningEffort, _config.PermissionMode, _workingDirectory),
+            AgentProviderKind.Codex => new CodexCliProvider(executablePath, _config.CodexModel, _config.PermissionMode, _workingDirectory),
+            _ => new ClaudeCliProvider(executablePath, _config.ClaudeModel, _config.PermissionMode, _workingDirectory)
         };
     }
 

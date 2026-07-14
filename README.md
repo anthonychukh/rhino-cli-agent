@@ -4,6 +4,8 @@ RhinoAgent is a Rhino 8 plug-in that starts a Claude Code / Codex-style agent di
 
 Type `Agent`, chat in the normal Rhino command prompt, and let the agent inspect or modify the active model through RhinoCommon, native Rhino commands, Rhino Python, C# scripts, and local project files.
 
+After you submit a prompt, the command line remains in Agent mode and shows the animated thinking state until the turn finishes. Provider work runs on a worker task while Rhino continues pumping its UI, so you can orbit the viewport and inspect panels without allowing a conflicting Rhino command to start. When the response is complete, the Agent prompt returns for the next message.
+
 While `Agent` is running, you can still model manually: type native command forms such as `_Line`, `-Layer`, `.Undo`, `! _Circle`, known command names such as `Line`, or your Rhino aliases. Use `/ask <prompt>` when a normal language prompt intentionally starts with a Rhino command name.
 
 ## Status
