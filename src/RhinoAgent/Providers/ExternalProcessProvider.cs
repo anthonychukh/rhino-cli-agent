@@ -27,7 +27,7 @@ public abstract class ExternalProcessProvider : IAgentProvider
     protected string WorkingDirectory => _workingDirectory;
 
     public async Task<AgentProviderResult> RunPromptAsync(
-        string prompt,
+        AgentProviderPrompt prompt,
         Action<AgentProgress> progress,
         CancellationToken cancellationToken)
     {
@@ -95,7 +95,8 @@ public abstract class ExternalProcessProvider : IAgentProvider
             }
         }, cancellationToken);
 
-        await process.StandardInput.WriteAsync(prompt.AsMemory(), cancellationToken).ConfigureAwait(false);
+        var standardInput = BuildStandardInput(prompt);
+        await process.StandardInput.WriteAsync(standardInput.AsMemory(), cancellationToken).ConfigureAwait(false);
         await process.StandardInput.FlushAsync(cancellationToken).ConfigureAwait(false);
         process.StandardInput.Close();
         progress(new AgentProgress($"{DisplayName} prompt written to stdin."));
@@ -127,7 +128,7 @@ public abstract class ExternalProcessProvider : IAgentProvider
     }
 
     private async Task<AgentProviderResult> RunPromptThroughCmdAsync(
-        string prompt,
+        AgentProviderPrompt prompt,
         Action<AgentProgress> progress,
         CancellationToken cancellationToken)
     {
@@ -140,7 +141,11 @@ public abstract class ExternalProcessProvider : IAgentProvider
         var stdoutPath = Path.Combine(tempDir, "stdout.jsonl");
         var stderrPath = Path.Combine(tempDir, "stderr.txt");
         var batchPath = Path.Combine(tempDir, "run-provider.cmd");
-        await File.WriteAllTextAsync(promptPath, prompt, Utf8NoBom, cancellationToken).ConfigureAwait(false);
+        await File.WriteAllTextAsync(
+            promptPath,
+            BuildStandardInput(prompt),
+            Utf8NoBom,
+            cancellationToken).ConfigureAwait(false);
 
         var collector = CreateCollector(progress);
         var args = BuildArguments(prompt).Select(QuoteForCmd);
@@ -208,7 +213,8 @@ public abstract class ExternalProcessProvider : IAgentProvider
         return result;
     }
 
-    protected abstract IReadOnlyList<string> BuildArguments(string prompt);
+    protected abstract IReadOnlyList<string> BuildArguments(AgentProviderPrompt prompt);
+    protected virtual string BuildStandardInput(AgentProviderPrompt prompt) => prompt.Text;
     protected abstract IProviderOutputCollector CreateCollector(Action<AgentProgress> progress);
     protected virtual void OnProviderResult(AgentProviderResult result)
     {

@@ -81,15 +81,28 @@ public sealed class AgentSession
 
     public int PendingConversationIndexTurnCount => _conversationIndex.PendingTurnCount;
 
-    public async Task<AgentTurnResult> RunUserTurnAsync(
+    public Task<AgentTurnResult> RunUserTurnAsync(
         string userMessage,
         CancellationToken cancellationToken = default,
         Action<string>? diagnostics = null,
         IReadOnlyList<string>? forcedSkillNames = null)
     {
+        return RunUserTurnAsync(
+            new AgentUserMessage(userMessage, Array.Empty<AgentImageAttachment>()),
+            cancellationToken,
+            diagnostics,
+            forcedSkillNames);
+    }
+
+    public async Task<AgentTurnResult> RunUserTurnAsync(
+        AgentUserMessage userMessage,
+        CancellationToken cancellationToken = default,
+        Action<string>? diagnostics = null,
+        IReadOnlyList<string>? forcedSkillNames = null)
+    {
         diagnostics?.Invoke("turn-entered");
-        _history.Add(("user", userMessage));
-        var selectedSkills = SelectSkillsForTurn(userMessage, forcedSkillNames);
+        _history.Add(("user", userMessage.Text));
+        var selectedSkills = SelectSkillsForTurn(userMessage.Text, forcedSkillNames);
         if (selectedSkills.Count > 0)
             CommandLineUi.Debug("Loaded skill: " + string.Join(", ", selectedSkills.Select(skill => skill.Name)));
 
@@ -122,7 +135,9 @@ public sealed class AgentSession
                 diagnostics?.Invoke("thinking-write-complete");
                 diagnostics?.Invoke("provider-run-start");
                 providerResult = _provider.RunPromptAsync(
-                        prompt,
+                        new AgentProviderPrompt(
+                            prompt,
+                            round == 0 ? userMessage.Images : Array.Empty<AgentImageAttachment>()),
                         progress =>
                         {
                             diagnostics?.Invoke($"provider-progress: {progress.Message}");
@@ -155,7 +170,7 @@ public sealed class AgentSession
                     totalToolResults,
                     false,
                     $"Provider exited with code {providerResult.ExitCode}.");
-                await CompleteTurnAndIndexMemoryAsync(userMessage, result, cancellationToken);
+                await CompleteTurnAndIndexMemoryAsync(userMessage.Text, result, cancellationToken);
                 return result;
             }
 
@@ -185,7 +200,7 @@ public sealed class AgentSession
                     totalToolResults,
                     false,
                     null);
-                await CompleteTurnAndIndexMemoryAsync(userMessage, result, cancellationToken);
+                await CompleteTurnAndIndexMemoryAsync(userMessage.Text, result, cancellationToken);
                 return result;
             }
 
@@ -231,7 +246,7 @@ public sealed class AgentSession
                     totalToolResults,
                     false,
                     null);
-                await CompleteTurnAndIndexMemoryAsync(userMessage, result, cancellationToken);
+                await CompleteTurnAndIndexMemoryAsync(userMessage.Text, result, cancellationToken);
                 return result;
             }
         }
@@ -245,7 +260,7 @@ public sealed class AgentSession
             totalToolResults,
             true,
             "Agent stopped after the configured tool-round limit.");
-        await CompleteTurnAndIndexMemoryAsync(userMessage, stoppedResult, cancellationToken);
+        await CompleteTurnAndIndexMemoryAsync(userMessage.Text, stoppedResult, cancellationToken);
         return stoppedResult;
     }
 

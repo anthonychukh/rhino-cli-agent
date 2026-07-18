@@ -3,6 +3,7 @@ using Rhino;
 using Rhino.ApplicationSettings;
 using Rhino.Commands;
 using Rhino.Input.Custom;
+using RhinoAgent.Attachments;
 using RhinoAgent.Config;
 using RhinoAgent.Runtime;
 
@@ -11,6 +12,8 @@ namespace RhinoAgent.Commands;
 [Guid("6DC03904-98A7-465B-90A4-6832EE10063E")]
 public sealed class AgentCommand : Command
 {
+    private static int _reportedImageHookFailure;
+
     public override string EnglishName => "Agent";
 
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
@@ -53,27 +56,35 @@ public sealed class AgentCommand : Command
                 while (true)
                 {
                     CommandLineUi.Separator();
-                    var input = ReadLiteralLine(CommandLineUi.UserPrompt);
+                    using var imageComposer = new AgentImageComposer();
+                    var input = ReadLiteralLine(CommandLineUi.UserPrompt, imageComposer);
                     if (input is null)
                         return Result.Cancel;
 
-                    input = input.Trim();
-                    if (input.Length == 0)
+                    var message = imageComposer.Compose(input);
+                    if (message.Text.Length == 0 && message.Images.Count == 0)
                         continue;
 
-                    if (TryHandleForcedPrompt(input, session))
+                    if (message.Images.Count > 0)
+                    {
+                        CommandLineUi.Debug("Attached " + string.Join(
+                            ", ",
+                            message.Images.Select(image => $"{image.Placeholder} {image.FileName}")));
+                    }
+
+                    if (TryHandleForcedPrompt(message, session))
                         continue;
 
-                    if (TryRunManualRhinoCommand(input))
+                    if (message.Images.Count == 0 && TryRunManualRhinoCommand(message.Text))
                         continue;
 
-                    var slashResult = SlashCommands.TryHandle(input, config, session, services);
+                    var slashResult = SlashCommands.TryHandle(message.Text, config, session, services);
                     if (slashResult == SlashCommandResult.Exit)
                         return Result.Success;
                     if (slashResult == SlashCommandResult.Handled)
                         continue;
 
-                    RunAgentTurn(session, input);
+                    RunAgentTurn(session, message);
                 }
             }
             finally
@@ -83,25 +94,96 @@ public sealed class AgentCommand : Command
         }
     }
 
-    private static string? ReadLiteralLine(string prompt)
+    private static string? ReadLiteralLine(string prompt, AgentImageComposer imageComposer)
     {
-        var getter = new GetString();
-        getter.SetCommandPrompt($"{prompt}>");
-        getter.AcceptNothing(true);
+        var pendingImages = "";
+        var awaitingNativeImagePath = false;
+        while (true)
+        {
+            var getter = new GetString();
+            getter.SetCommandPrompt(pendingImages.Length == 0
+                ? $"{prompt}>"
+                : $"{prompt}> {pendingImages}");
+            getter.AcceptNothing(true);
 
-        // GetLiteralString keeps spaces in the command line, which makes the
-        // Rhino prompt viable as a chat composer instead of a single-word input.
-        var result = getter.GetLiteralString();
-        if (result == Rhino.Input.GetResult.Cancel)
-            return null;
-        if (result == Rhino.Input.GetResult.Nothing)
-            return "";
-        return result == Rhino.Input.GetResult.String ? getter.StringResult() : "";
+            // GetLiteralString keeps spaces in the command line, which makes the
+            // Rhino prompt viable as a chat composer instead of a single-word input.
+            using var pasteHook = AgentCommandLineImagePasteHook.TryInstall(imageComposer);
+            if (OperatingSystem.IsWindows()
+                && pasteHook is null
+                && Interlocked.Exchange(ref _reportedImageHookFailure, 1) == 0)
+            {
+                CommandLineUi.Debug(
+                    $"Image clipboard hook could not start (Windows error {AgentCommandLineImagePasteHook.LastInstallError}). " +
+                    "Rhino's native paste fallback and pasted/dropped image paths still work.");
+            }
+
+            var result = getter.GetLiteralString();
+            if (result == Rhino.Input.GetResult.Cancel)
+                return null;
+
+            var input = result == Rhino.Input.GetResult.String ? getter.StringResult() : "";
+            if (IsNativeImagePasteCommand(input)
+                && imageComposer.TryCaptureClipboard(out var insertion))
+            {
+                pendingImages = JoinPromptParts(pendingImages, insertion);
+                awaitingNativeImagePath = true;
+                continue;
+            }
+
+            // Rhino may queue its own PastedImages file path immediately after
+            // the _Paste sentinel. The clipboard capture above already owns the
+            // attachment, so consume this duplicate and keep the composer open.
+            if (awaitingNativeImagePath && IsExistingImagePathOnly(input))
+            {
+                awaitingNativeImagePath = false;
+                continue;
+            }
+
+            // Explorer drag/drop can arrive as a submitted image path rather
+            // than a keyboard paste event. Convert a path-only input into the
+            // same visible attachment state and keep the composer open.
+            if (IsExistingImagePathOnly(input))
+            {
+                var droppedImage = imageComposer.Compose(input);
+                if (droppedImage.Images.Count > 0)
+                {
+                    pendingImages = JoinPromptParts(pendingImages, droppedImage.Text);
+                    continue;
+                }
+            }
+
+            return JoinPromptParts(pendingImages, input);
+        }
     }
+
+    private static bool IsNativeImagePasteCommand(string input)
+    {
+        var command = input.TrimStart('_', '-', ' ');
+        return command.Equals("Paste", StringComparison.OrdinalIgnoreCase)
+            || command.Equals("Picture", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsExistingImagePathOnly(string input)
+    {
+        var path = input.Trim().Trim('"', '\'');
+        if (!File.Exists(path))
+            return false;
+
+        return Path.GetExtension(path).ToLowerInvariant() is
+            ".png" or ".jpg" or ".jpeg" or ".gif" or ".webp";
+    }
+
+    private static string JoinPromptParts(string left, string right) =>
+        string.IsNullOrWhiteSpace(left)
+            ? right.Trim()
+            : string.IsNullOrWhiteSpace(right)
+                ? left.Trim()
+                : $"{left.Trim()} {right.Trim()}";
 
     private static void RunAgentTurn(
         AgentSession session,
-        string input,
+        AgentUserMessage input,
         IReadOnlyList<string>? forcedSkillNames = null)
     {
         var timeoutSeconds = Math.Max(0, AgentConfigStore.Load().ProviderTurnTimeoutSeconds);
@@ -161,9 +243,10 @@ public sealed class AgentCommand : Command
         }
     }
 
-    private static bool TryHandleForcedPrompt(string input, AgentSession session)
+    private static bool TryHandleForcedPrompt(AgentUserMessage message, AgentSession session)
     {
         const string askCommand = "/ask";
+        var input = message.Text;
         if (!input.Equals(askCommand, StringComparison.OrdinalIgnoreCase)
             && !input.StartsWith(askCommand + " ", StringComparison.OrdinalIgnoreCase))
             return false;
@@ -175,7 +258,7 @@ public sealed class AgentCommand : Command
         if (prompt.Length == 0)
             CommandLineUi.Debug("Usage: /ask <prompt>");
         else
-            RunAgentTurn(session, prompt);
+            RunAgentTurn(session, message with { Text = prompt });
 
         return true;
     }

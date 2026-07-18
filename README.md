@@ -4,6 +4,8 @@ RhinoAgent is a Rhino 8 plug-in that starts a Claude Code / Codex-style agent di
 
 Type `Agent`, chat in the normal Rhino command prompt, and let the agent inspect or modify the active model through RhinoCommon, native Rhino commands, Rhino Python, C# scripts, and local project files.
 
+While the `Agent` prompt is active on Windows, press `Ctrl+V` with an image on the clipboard. RhinoAgent saves the image temporarily and inserts `[Image 1]` into the command line, then sends the actual image to Claude or Codex with the prompt. Copying an image file in Explorer and pressing `Ctrl+V` works too. You can also paste or drop a PNG, JPEG, GIF, or WebP file path into the prompt; quoted paths and paths dropped as the entire input are converted to the same attachment placeholder when submitted. A prompt supports up to eight images, 20 MB each.
+
 After you submit a prompt, the command line remains in Agent mode and shows the animated thinking state until the turn finishes. Provider work runs on a worker task while Rhino continues pumping its UI, so you can orbit the viewport and inspect panels without allowing a conflicting Rhino command to start. When the response is complete, the Agent prompt returns for the next message.
 
 While `Agent` is running, you can still model manually: type native command forms such as `_Line`, `-Layer`, `.Undo`, `! _Circle`, known command names such as `Line`, or your Rhino aliases. Use `/ask <prompt>` when a normal language prompt intentionally starts with a Rhino command name.
@@ -15,6 +17,7 @@ This is an early V0 meant for hands-on testing.
 - Target: Rhino 8, Windows and macOS
 - Plug-in format: RhinoCommon `.rhp`
 - Providers: Claude Code CLI and Codex CLI
+- Image prompts: clipboard paste on Windows plus pasted/dropped image paths; native multimodal transport to both providers
 - Auth: delegates to the official provider CLI login flows
 - Session persistence: Claude Code and Codex long-running sessions are saved and resumed by working directory; `/clear` starts fresh
 - Grasshopper: planned, not implemented yet

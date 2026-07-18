@@ -13,7 +13,7 @@ public sealed class CodexCliProvider : ExternalProcessProvider
     public override AgentProviderKind Kind => AgentProviderKind.Codex;
     public override string DisplayName => $"Codex CLI ({Model}, {PermissionMode})";
 
-    protected override IReadOnlyList<string> BuildArguments(string prompt)
+    protected override IReadOnlyList<string> BuildArguments(AgentProviderPrompt prompt)
     {
         var args = new List<string>
         {
@@ -25,6 +25,12 @@ public sealed class CodexCliProvider : ExternalProcessProvider
             "--sandbox",
             MapSandbox(PermissionMode)
         };
+
+        foreach (var image in prompt.Images)
+        {
+            args.Add("--image");
+            args.Add(image.LocalPath);
+        }
 
         if (PermissionMode == AgentPermissionMode.FullAccess)
             args.Add("--dangerously-bypass-approvals-and-sandbox");

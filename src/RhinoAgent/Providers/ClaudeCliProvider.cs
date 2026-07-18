@@ -53,7 +53,7 @@ public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationRe
         return true;
     }
 
-    protected override IReadOnlyList<string> BuildArguments(string prompt)
+    protected override IReadOnlyList<string> BuildArguments(AgentProviderPrompt prompt)
     {
         var args = new List<string>
         {
@@ -65,6 +65,12 @@ public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationRe
             "--model", Model,
             "--permission-mode", MapPermissionMode(PermissionMode)
         };
+
+        if (prompt.Images.Count > 0)
+        {
+            args.Add("--input-format");
+            args.Add("stream-json");
+        }
 
         if (_isolateSession)
         {
@@ -98,6 +104,38 @@ public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationRe
         }
 
         return args;
+    }
+
+    protected override string BuildStandardInput(AgentProviderPrompt prompt) =>
+        prompt.Images.Count == 0 ? prompt.Text : BuildStreamJsonInput(prompt);
+
+    internal static string BuildStreamJsonInput(AgentProviderPrompt prompt)
+    {
+        var content = new List<object>();
+        foreach (var image in prompt.Images)
+        {
+            content.Add(new
+            {
+                type = "image",
+                source = new
+                {
+                    type = "base64",
+                    media_type = image.MediaType,
+                    data = Convert.ToBase64String(File.ReadAllBytes(image.LocalPath))
+                }
+            });
+        }
+
+        content.Add(new { type = "text", text = prompt.Text });
+        return JsonSerializer.Serialize(new
+        {
+            type = "user",
+            message = new
+            {
+                role = "user",
+                content
+            }
+        }) + Environment.NewLine;
     }
 
     protected override IProviderOutputCollector CreateCollector(Action<AgentProgress> progress) =>

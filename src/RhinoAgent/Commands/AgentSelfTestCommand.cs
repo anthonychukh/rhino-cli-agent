@@ -6,6 +6,7 @@ using Rhino.ApplicationSettings;
 using Rhino.Commands;
 using Rhino.DocObjects;
 using Rhino.Geometry;
+using RhinoAgent.Attachments;
 using RhinoAgent.Config;
 using RhinoAgent.Memory;
 using RhinoAgent.Providers;
@@ -57,6 +58,9 @@ public sealed class AgentSelfTestCommand : Command
         var viewportCaptureAwareness = RunViewportCaptureAwareness(doc);
         success = success && viewportCaptureAwareness.Ok;
 
+        var imageAttachments = RunImageAttachmentSelfTest(doc);
+        success = success && imageAttachments.Ok;
+
         var skillSystem = RunSkillSystemSelfTest(doc);
         success = success && skillSystem.Ok;
         var documentMemory = RunDocumentMemoryRoundTrip(doc);
@@ -99,6 +103,7 @@ public sealed class AgentSelfTestCommand : Command
             },
             scriptedToolRecovery,
             viewportCaptureAwareness,
+            imageAttachments,
             skillSystem,
             documentMemory,
             commands = new[]
@@ -130,6 +135,106 @@ public sealed class AgentSelfTestCommand : Command
 
     public static string GetOutputPath() =>
         Path.Combine(Path.GetTempPath(), "RhinoAgent", "self-test.json");
+
+    private static ImageAttachmentSelfTestResult RunImageAttachmentSelfTest(RhinoDoc doc)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "RhinoAgent", "image self test " + Guid.NewGuid().ToString("N"));
+        var imagePath = Path.Combine(root, "one-pixel.png");
+        var provider = new ScriptedAttachmentProvider();
+        AgentTurnResult? turnResult = null;
+        Exception? exception = null;
+        var placeholderResolved = false;
+        var claudeStreamJsonOk = false;
+        var codexInputOk = false;
+
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllBytes(
+                imagePath,
+                Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
+
+            AgentUserMessage message;
+            using (var composer = new AgentImageComposer())
+            {
+                message = composer.Compose($"Describe this image: \"{imagePath}\"");
+                placeholderResolved = message.Text == "Describe this image: [Image 1]"
+                    && message.Images.Count == 1
+                    && message.Images[0].LocalPath == imagePath;
+
+                var config = new AgentConfig
+                {
+                    PermissionMode = AgentPermissionMode.FullAccess,
+                    ProviderProcessMode = AgentProviderProcessMode.Stateless,
+                    EnableDocumentMemory = false,
+                    MaxToolRounds = 2
+                };
+                var toolHost = new RhinoToolHost(doc, config);
+                var approvals = new ApprovalService(config);
+                var session = new AgentSession(doc, config, provider, toolHost, approvals);
+                turnResult = session.RunUserTurnAsync(message).GetAwaiter().GetResult();
+            }
+
+            var firstPrompt = provider.Prompts.FirstOrDefault();
+            if (firstPrompt is not null)
+            {
+                using var claudeJson = JsonDocument.Parse(ClaudeCliProvider.BuildStreamJsonInput(firstPrompt));
+                var content = claudeJson.RootElement
+                    .GetProperty("message")
+                    .GetProperty("content");
+                var source = content[0].GetProperty("source");
+                claudeStreamJsonOk = content.GetArrayLength() == 2
+                    && content[0].GetProperty("type").GetString() == "image"
+                    && source.GetProperty("type").GetString() == "base64"
+                    && source.GetProperty("media_type").GetString() == "image/png"
+                    && Convert.FromBase64String(source.GetProperty("data").GetString() ?? "").Length > 0
+                    && content[1].GetProperty("type").GetString() == "text";
+
+                var codexJson = JsonSerializer.Serialize(CodexAppServerProvider.BuildTurnInput(firstPrompt));
+                using var codexInput = JsonDocument.Parse(codexJson);
+                var items = codexInput.RootElement;
+                codexInputOk = items.GetArrayLength() == 2
+                    && items[0].GetProperty("type").GetString() == "localImage"
+                    && items[0].GetProperty("path").GetString() == imagePath
+                    && items[1].GetProperty("type").GetString() == "text";
+            }
+        }
+        catch (Exception ex)
+        {
+            exception = ex;
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(root, recursive: true);
+            }
+            catch
+            {
+                // Self-test cleanup is best effort.
+            }
+        }
+
+        var imageCounts = provider.Prompts.Select(prompt => prompt.Images.Count).ToArray();
+        var firstRoundOnly = imageCounts.SequenceEqual([1, 0]);
+        var ok = exception is null
+            && placeholderResolved
+            && claudeStreamJsonOk
+            && codexInputOk
+            && firstRoundOnly
+            && turnResult?.Success == true;
+
+        return new ImageAttachmentSelfTestResult(
+            ok,
+            placeholderResolved,
+            provider.Prompts.Count,
+            imageCounts,
+            firstRoundOnly,
+            claudeStreamJsonOk,
+            codexInputOk,
+            turnResult?.Success ?? false,
+            FirstNonEmpty(exception?.Message, turnResult?.Error));
+    }
 
     private static SkillSystemSelfTestResult RunSkillSystemSelfTest(RhinoDoc doc)
     {
@@ -881,6 +986,17 @@ public sealed class AgentSelfTestCommand : Command
         string VisibleText,
         string? Error);
 
+    private sealed record ImageAttachmentSelfTestResult(
+        bool Ok,
+        bool PlaceholderResolved,
+        int ProviderPromptCount,
+        IReadOnlyList<int> ImageCountsByRound,
+        bool ImagesSentOnFirstRoundOnly,
+        bool ClaudeStreamJsonOk,
+        bool CodexInputOk,
+        bool TurnSuccess,
+        string? Error);
+
     private sealed record SkillSystemSelfTestResult(
         bool Ok,
         string Root,
@@ -917,6 +1033,51 @@ public sealed class AgentSelfTestCommand : Command
         string ExportPath,
         string? Error);
 
+    private sealed class ScriptedAttachmentProvider : IAgentProvider
+    {
+        private int _turn;
+
+        public AgentProviderKind Kind => AgentProviderKind.Codex;
+        public string DisplayName => "Scripted image-attachment self-test provider";
+        public AgentProviderProcessMode ProcessMode => AgentProviderProcessMode.Stateless;
+        public List<AgentProviderPrompt> Prompts { get; } = [];
+
+        public Task<AgentProviderResult> RunPromptAsync(
+            AgentProviderPrompt prompt,
+            Action<AgentProgress> progress,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Prompts.Add(prompt);
+            _turn++;
+            progress(new AgentProgress($"scripted image-attachment self-test turn {_turn}"));
+
+            var text = _turn == 1
+                ? """
+                  I will inspect the Rhino document context after reading the attached image.
+                  <rhino-agent>{"tool_calls":[{"tool":"document_summary","arguments":{}}]}</rhino-agent>
+                  """
+                : "The image attachment was available on the first provider round and the tool follow-up completed.";
+            return Task.FromResult(new AgentProviderResult(
+                text,
+                "self-test",
+                "scripted-image-attachment",
+                null,
+                0,
+                ""));
+        }
+
+        public void Reset()
+        {
+            _turn = 0;
+            Prompts.Clear();
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
     private sealed class ScriptedToolRecoveryProvider : IAgentProvider
     {
         private readonly string _marker;
@@ -934,12 +1095,12 @@ public sealed class AgentSelfTestCommand : Command
         public IReadOnlyList<string> Prompts => _prompts;
 
         public Task<AgentProviderResult> RunPromptAsync(
-            string prompt,
+            AgentProviderPrompt prompt,
             Action<AgentProgress> progress,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _prompts.Add(prompt);
+            _prompts.Add(prompt.Text);
             _turn++;
             progress(new AgentProgress($"scripted self-test turn {_turn}"));
 
@@ -1032,15 +1193,15 @@ public sealed class AgentSelfTestCommand : Command
         public IReadOnlyList<string> Prompts => _prompts;
 
         public Task<AgentProviderResult> RunPromptAsync(
-            string prompt,
+            AgentProviderPrompt prompt,
             Action<AgentProgress> progress,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _prompts.Add(prompt);
+            _prompts.Add(prompt.Text);
             progress(new AgentProgress("scripted skill-use self-test turn"));
 
-            var sawSkill = prompt.Contains("--- skill: parametric-form-study ---", StringComparison.OrdinalIgnoreCase);
+            var sawSkill = prompt.Text.Contains("--- skill: parametric-form-study ---", StringComparison.OrdinalIgnoreCase);
             var text = sawSkill
                 ? "The parametric form study skill is loaded and ready to guide the facade grid."
                 : "No matching skill instructions were loaded.";
@@ -1079,12 +1240,12 @@ public sealed class AgentSelfTestCommand : Command
         public string? ObservedManifestPath { get; private set; }
 
         public Task<AgentProviderResult> RunPromptAsync(
-            string prompt,
+            AgentProviderPrompt prompt,
             Action<AgentProgress> progress,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            _prompts.Add(prompt);
+            _prompts.Add(prompt.Text);
             _turn++;
             progress(new AgentProgress($"scripted viewport-capture self-test turn {_turn}"));
 
@@ -1103,7 +1264,7 @@ public sealed class AgentSelfTestCommand : Command
                         ["draw_axes"] = false,
                         ["selected_only"] = false
                     })),
-                _ => ObserveCaptureAndRespond(prompt)
+                _ => ObserveCaptureAndRespond(prompt.Text)
             };
 
             return Task.FromResult(new AgentProviderResult(
@@ -1214,12 +1375,12 @@ public sealed class AgentSelfTestCommand : Command
         public string LastPrompt { get; private set; } = "";
 
         public Task<AgentProviderResult> RunPromptAsync(
-            string prompt,
+            AgentProviderPrompt prompt,
             Action<AgentProgress> progress,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            LastPrompt = prompt;
+            LastPrompt = prompt.Text;
             var text = _update
                 ? JsonSerializer.Serialize(new
                 {

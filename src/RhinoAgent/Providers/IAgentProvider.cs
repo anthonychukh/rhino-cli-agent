@@ -6,7 +6,7 @@ public interface IAgentProvider : IDisposable
     string DisplayName { get; }
     AgentProviderProcessMode ProcessMode { get; }
     Task<AgentProviderResult> RunPromptAsync(
-        string prompt,
+        AgentProviderPrompt prompt,
         Action<AgentProgress> progress,
         CancellationToken cancellationToken);
     void Reset();

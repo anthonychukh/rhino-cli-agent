@@ -51,6 +51,25 @@ public sealed record ProviderStatus(
 
 public sealed record AgentProgress(string Message, bool IsTransient = false);
 
+public sealed record AgentImageAttachment(
+    int Number,
+    string LocalPath,
+    string FileName,
+    string MediaType,
+    long SizeBytes,
+    bool IsTemporary)
+{
+    public string Placeholder => $"[Image {Number}]";
+}
+
+public sealed record AgentUserMessage(
+    string Text,
+    IReadOnlyList<AgentImageAttachment> Images);
+
+public sealed record AgentProviderPrompt(
+    string Text,
+    IReadOnlyList<AgentImageAttachment> Images);
+
 public sealed record TokenUsage(
     long? InputTokens,
     long? OutputTokens,

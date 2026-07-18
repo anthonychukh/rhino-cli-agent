@@ -44,7 +44,7 @@ public sealed class CodexAppServerProvider : IAgentProvider, IConversationResume
     public string? ActiveSessionId => _threadId ?? CodexSessionStore.LoadForWorkingDirectory(_workingDirectory)?.ThreadId;
 
     public async Task<AgentProviderResult> RunPromptAsync(
-        string prompt,
+        AgentProviderPrompt prompt,
         Action<AgentProgress> progress,
         CancellationToken cancellationToken)
     {
@@ -303,7 +303,7 @@ public sealed class CodexAppServerProvider : IAgentProvider, IConversationResume
     }
 
     private async Task<AgentProviderResult> RunTurnAsync(
-        string prompt,
+        AgentProviderPrompt prompt,
         Action<AgentProgress> progress,
         CancellationToken cancellationToken)
     {
@@ -323,15 +323,7 @@ public sealed class CodexAppServerProvider : IAgentProvider, IConversationResume
             {
                 threadId = _threadId,
                 clientUserMessageId = (string?)null,
-                input = new[]
-                {
-                    new
-                    {
-                        type = "text",
-                        text = prompt,
-                        text_elements = Array.Empty<object>()
-                    }
-                },
+                input = BuildTurnInput(prompt),
                 cwd = _workingDirectory,
                 approvalPolicy = MapApprovalPolicy(_permissionMode),
                 approvalsReviewer = "user",
@@ -404,6 +396,20 @@ public sealed class CodexAppServerProvider : IAgentProvider, IConversationResume
 
         CodexSessionStore.SaveWorkingDirectoryThread(_workingDirectory, _threadId, _model);
         return new AgentProviderResult(text.ToString().Trim(), _model, _threadId, usage, 0, "");
+    }
+
+    internal static IReadOnlyList<object> BuildTurnInput(AgentProviderPrompt prompt)
+    {
+        var input = new List<object>();
+        foreach (var image in prompt.Images)
+            input.Add(new { type = "localImage", path = image.LocalPath });
+        input.Add(new
+        {
+            type = "text",
+            text = prompt.Text,
+            text_elements = Array.Empty<object>()
+        });
+        return input;
     }
 
     private async Task<JsonDocument> WaitForResponseAsync(
