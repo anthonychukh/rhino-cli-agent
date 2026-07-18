@@ -159,13 +159,13 @@ public sealed class AgentSelfTestCommand : Command
             var approvals = new ApprovalService(config);
 
             createToolResult = toolHost.ExecuteAsync(new ToolCallRequest
+            {
+                Tool = "create_skill",
+                Arguments = new Dictionary<string, object?>
                 {
-                    Tool = "create_skill",
-                    Arguments = new Dictionary<string, object?>
-                    {
-                        ["name"] = "general-note-polisher",
-                        ["description"] = "Polish short project notes into concise next actions. Use when the user asks to rewrite notes, clarify decisions, or turn rough notes into action items.",
-                        ["files"] = new object[]
+                    ["name"] = "general-note-polisher",
+                    ["description"] = "Polish short project notes into concise next actions. Use when the user asks to rewrite notes, clarify decisions, or turn rough notes into action items.",
+                    ["files"] = new object[]
                         {
                             new Dictionary<string, object?>
                             {
@@ -185,31 +185,31 @@ public sealed class AgentSelfTestCommand : Command
                                     """
                             }
                         }
-                    }
-                })
+                }
+            })
                 .GetAwaiter()
                 .GetResult();
 
             readToolResult = toolHost.ExecuteAsync(new ToolCallRequest
+            {
+                Tool = "read_skill_file",
+                Arguments = new Dictionary<string, object?>
                 {
-                    Tool = "read_skill_file",
-                    Arguments = new Dictionary<string, object?>
-                    {
-                        ["name"] = "general-note-polisher",
-                        ["path"] = "SKILL.md"
-                    }
-                })
+                    ["name"] = "general-note-polisher",
+                    ["path"] = "SKILL.md"
+                }
+            })
                 .GetAwaiter()
                 .GetResult();
 
             unsafeToolResult = toolHost.ExecuteAsync(new ToolCallRequest
+            {
+                Tool = "create_skill",
+                Arguments = new Dictionary<string, object?>
                 {
-                    Tool = "create_skill",
-                    Arguments = new Dictionary<string, object?>
-                    {
-                        ["name"] = "unsafe-skill",
-                        ["description"] = "This intentionally fails because it tries to write outside the skill folder.",
-                        ["files"] = new object[]
+                    ["name"] = "unsafe-skill",
+                    ["description"] = "This intentionally fails because it tries to write outside the skill folder.",
+                    ["files"] = new object[]
                         {
                             new Dictionary<string, object?>
                             {
@@ -217,8 +217,8 @@ public sealed class AgentSelfTestCommand : Command
                                 ["content"] = "bad"
                             }
                         }
-                    }
-                })
+                }
+            })
                 .GetAwaiter()
                 .GetResult();
 
@@ -577,7 +577,7 @@ public sealed class AgentSelfTestCommand : Command
                 "test tools");
             var promptGuardrailOk = promptPackage.Contains("canonical project memory is embedded in the active Rhino .3dm document", StringComparison.Ordinal)
                 && promptPackage.Contains("do not create or edit AGENTS.md, MEMORY.md, or any sidecar markdown file with write_file", StringComparison.Ordinal)
-                && promptPackage.Contains("private RhinoAgent maintenance pass updates the embedded memory", StringComparison.Ordinal);
+                && promptPackage.Contains("incrementally indexes completed session turns", StringComparison.Ordinal);
 
             var largeMarkdown = customMarkdown + System.Environment.NewLine + new string('x', AgentMemoryMarkdown.PromptMemoryCharacterLimit + 200);
             AgentMemoryStore.SaveUserMarkdown(doc, largeMarkdown, "Self-test large memory.");
@@ -598,7 +598,65 @@ public sealed class AgentSelfTestCommand : Command
                 && afterMaintenance.Markdown.Contains("Scripted maintenance note.", StringComparison.Ordinal)
                 && afterMaintenance.Markdown.Contains("Preserve this user-authored intent.", StringComparison.Ordinal);
 
-            var beforeNoUpdateHash = afterMaintenance.CurrentHash;
+            var conversationIndex = new AgentConversationIndex();
+            var indexedTurnResult = new AgentTurnResult(
+                true,
+                "Scripted provider",
+                "self-test",
+                "self-test-provider-session",
+                null,
+                0,
+                "",
+                "The millimeter-unit decision is recorded.",
+                0,
+                0,
+                false,
+                null);
+            var indexAdded = conversationIndex.TryAdd(
+                "Remember our decision to use millimeters for this model.",
+                indexedTurnResult,
+                out _);
+            var duplicateRejected = !conversationIndex.TryAdd(
+                "Remember our decision to use millimeters for this model.",
+                indexedTurnResult,
+                out _);
+            var indexBatch = conversationIndex.GetNextBatch();
+            var indexingProvider = new ScriptedMemoryProvider(
+                true,
+                "- Scripted indexed conversation note.",
+                "Scripted indexed conversation summary.");
+            var indexUpdate = new AgentMemoryUpdateService(
+                    doc,
+                    new AgentConfig { EnableDocumentMemory = true, ShowDebugMessages = false },
+                    () => indexingProvider)
+                .IndexConversationBatchAsync(indexBatch)
+                .GetAwaiter()
+                .GetResult();
+            if (indexUpdate.Completed)
+                conversationIndex.MarkIndexed(indexBatch);
+            var afterIndex = AgentMemoryStore.Load(doc);
+            var batchingIndex = new AgentConversationIndex();
+            var batchingAddsOk = Enumerable.Range(1, AgentConversationIndex.AutomaticFlushTurnCount)
+                .All(index => batchingIndex.TryAdd(
+                    $"Conversation batch turn {index}.",
+                    indexedTurnResult with { VisibleText = $"Batch response {index}." },
+                    out _));
+            var batchingOk = batchingAddsOk
+                && batchingIndex.ShouldFlushAutomatically
+                && batchingIndex.GetNextBatch().Count == AgentConversationIndex.AutomaticFlushTurnCount;
+            var conversationIndexOk = indexAdded
+                && duplicateRejected
+                && batchingOk
+                && indexBatch.Count == 1
+                && indexUpdate.Completed
+                && indexUpdate.Updated
+                && conversationIndex.PendingTurnCount == 0
+                && indexingProvider.LastPrompt.Contains("Conversation index batch:", StringComparison.Ordinal)
+                && indexingProvider.LastPrompt.Contains("Remember our decision to use millimeters", StringComparison.Ordinal)
+                && afterIndex.Markdown.Contains("Scripted indexed conversation note.", StringComparison.Ordinal)
+                && afterIndex.Markdown.Contains("Preserve this user-authored intent.", StringComparison.Ordinal);
+
+            var beforeNoUpdateHash = afterIndex.CurrentHash;
             var noUpdate = new AgentMemoryUpdateService(
                     doc,
                     new AgentConfig { EnableDocumentMemory = true, ShowDebugMessages = false },
@@ -628,6 +686,7 @@ public sealed class AgentSelfTestCommand : Command
                 && promptGuardrailOk
                 && promptLargeOk
                 && maintenanceOk
+                && conversationIndexOk
                 && noUpdateOk
                 && disabledOk;
 
@@ -647,6 +706,7 @@ public sealed class AgentSelfTestCommand : Command
                 promptGuardrailOk,
                 promptLargeOk,
                 maintenanceOk,
+                conversationIndexOk,
                 noUpdateOk,
                 disabledOk,
                 exportedPath,
@@ -655,6 +715,7 @@ public sealed class AgentSelfTestCommand : Command
         catch (Exception ex)
         {
             return new DocumentMemoryResult(
+                false,
                 false,
                 false,
                 false,
@@ -850,6 +911,7 @@ public sealed class AgentSelfTestCommand : Command
         bool PromptGuardrailOk,
         bool PromptLargeOk,
         bool MaintenanceOk,
+        bool ConversationIndexOk,
         bool NoUpdateOk,
         bool DisabledOk,
         string ExportPath,
@@ -1133,15 +1195,23 @@ public sealed class AgentSelfTestCommand : Command
     private sealed class ScriptedMemoryProvider : IAgentProvider
     {
         private readonly bool _update;
+        private readonly string _agentNotes;
+        private readonly string _summary;
 
-        public ScriptedMemoryProvider(bool update)
+        public ScriptedMemoryProvider(
+            bool update,
+            string agentNotes = "- Scripted maintenance note.",
+            string summary = "Scripted maintenance summary.")
         {
             _update = update;
+            _agentNotes = agentNotes;
+            _summary = summary;
         }
 
         public AgentProviderKind Kind => AgentProviderKind.Codex;
         public string DisplayName => "Scripted memory self-test provider";
         public AgentProviderProcessMode ProcessMode => AgentProviderProcessMode.Stateless;
+        public string LastPrompt { get; private set; } = "";
 
         public Task<AgentProviderResult> RunPromptAsync(
             string prompt,
@@ -1149,13 +1219,22 @@ public sealed class AgentSelfTestCommand : Command
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            LastPrompt = prompt;
             var text = _update
-                ? """
-                  {"update":true,"agentNotes":"- Scripted maintenance note.","summary":"Scripted maintenance summary.","reason":"Scripted memory self-test update."}
-                  """
-                : """
-                  {"update":false,"agentNotes":"","summary":"","reason":"No durable memory changes in scripted test."}
-                  """;
+                ? JsonSerializer.Serialize(new
+                {
+                    update = true,
+                    agentNotes = _agentNotes,
+                    summary = _summary,
+                    reason = "Scripted memory self-test update."
+                })
+                : JsonSerializer.Serialize(new
+                {
+                    update = false,
+                    agentNotes = "",
+                    summary = "",
+                    reason = "No durable memory changes in scripted test."
+                });
             return Task.FromResult(new AgentProviderResult(text, "self-test", "scripted-memory", null, 0, ""));
         }
 

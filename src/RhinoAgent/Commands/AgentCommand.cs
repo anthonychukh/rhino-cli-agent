@@ -48,30 +48,37 @@ public sealed class AgentCommand : Command
                 services.Approvals,
                 services.SkillStore,
                 services.MemoryUpdater);
-            while (true)
+            try
             {
-                CommandLineUi.Separator();
-                var input = ReadLiteralLine(CommandLineUi.UserPrompt);
-                if (input is null)
-                    return Result.Cancel;
+                while (true)
+                {
+                    CommandLineUi.Separator();
+                    var input = ReadLiteralLine(CommandLineUi.UserPrompt);
+                    if (input is null)
+                        return Result.Cancel;
 
-                input = input.Trim();
-                if (input.Length == 0)
-                    continue;
+                    input = input.Trim();
+                    if (input.Length == 0)
+                        continue;
 
-                if (TryHandleForcedPrompt(input, session))
-                    continue;
+                    if (TryHandleForcedPrompt(input, session))
+                        continue;
 
-                if (TryRunManualRhinoCommand(input))
-                    continue;
+                    if (TryRunManualRhinoCommand(input))
+                        continue;
 
-                var slashResult = SlashCommands.TryHandle(input, config, session, services);
-                if (slashResult == SlashCommandResult.Exit)
-                    return Result.Success;
-                if (slashResult == SlashCommandResult.Handled)
-                    continue;
+                    var slashResult = SlashCommands.TryHandle(input, config, session, services);
+                    if (slashResult == SlashCommandResult.Exit)
+                        return Result.Success;
+                    if (slashResult == SlashCommandResult.Handled)
+                        continue;
 
-                RunAgentTurn(session, input);
+                    RunAgentTurn(session, input);
+                }
+            }
+            finally
+            {
+                FlushConversationIndex(session, config);
             }
         }
     }
@@ -120,6 +127,37 @@ public sealed class AgentCommand : Command
         catch (Exception ex)
         {
             CommandLineUi.Debug($"Agent error: {ex.Message}");
+        }
+    }
+
+    private static void FlushConversationIndex(AgentSession session, AgentConfig config)
+    {
+        if (session.PendingConversationIndexTurnCount == 0)
+            return;
+
+        var timeoutSeconds = Math.Max(30, config.ProviderTurnTimeoutSeconds);
+        using var timeoutCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        try
+        {
+            var result = RhinoTaskPump.Run(
+                session.IndexConversationAsync,
+                timeoutCancellation.Token);
+            if (result.Updated)
+                CommandLineUi.Debug($"Session conversation indexed into memory: {result.Reason}. Use /memory undo to revert.");
+            else if (!result.Completed)
+                CommandLineUi.Debug($"Session conversation index remains pending: {result.Message}");
+            else if (config.ShowDebugMessages)
+                CommandLineUi.Debug($"Session conversation indexed; memory unchanged: {result.Message}");
+        }
+        catch (OperationCanceledException)
+        {
+            CommandLineUi.Debug(timeoutCancellation.IsCancellationRequested
+                ? $"Session conversation indexing timed out after {timeoutSeconds} seconds."
+                : "Session conversation indexing was canceled.");
+        }
+        catch (Exception ex)
+        {
+            CommandLineUi.Debug($"Session conversation indexing failed: {ex.Message}");
         }
     }
 

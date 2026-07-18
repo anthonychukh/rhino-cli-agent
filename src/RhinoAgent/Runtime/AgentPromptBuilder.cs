@@ -67,7 +67,7 @@ public static class AgentPromptBuilder
             sb.AppendLine("- The canonical project memory is embedded in the active Rhino .3dm document under RhinoAgent document user text.");
             sb.AppendLine("- Treat the memory shown below as durable project context, not as a filesystem file to edit.");
             sb.AppendLine("- If the user asks you to remember something, update memory, save project context, or maintain an AGENTS.md-style note, do not create or edit AGENTS.md, MEMORY.md, or any sidecar markdown file with write_file.");
-            sb.AppendLine("- Normal turns should answer the user first. A separate private RhinoAgent maintenance pass updates the embedded memory after successful meaningful turns.");
+            sb.AppendLine("- Normal turns should answer the user first. RhinoAgent incrementally indexes completed session turns and privately merges only durable context into embedded memory.");
             sb.AppendLine("- For manual memory operations, tell the user to use /memory show, /memory open, /memory refresh, /memory import, or /memory export.");
             sb.AppendLine("Current Rhino document memory:");
             sb.AppendLine(AgentMemoryPromptFormatter.FormatForPrompt(doc));

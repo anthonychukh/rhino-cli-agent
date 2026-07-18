@@ -112,6 +112,7 @@ Slash commands inside `Agent`:
 - `/debug on|off`
 - `/timeout <seconds>|off`
 - `/skill list|show|use|create|save|enable|disable|delete|export|demos`
+- `/memory status|show|open|index|refresh|undo|history|import|export|on|off`
 - `/run <rhino command>`
 - `! <rhino command or alias>`
 - `_Command`, `-Command`, `.Command`, known Rhino command names, or aliases for native passthrough
@@ -131,6 +132,12 @@ Slash commands inside `Agent`:
 `/debug off` hides provider progress and tool execution debug messages inside the active `Agent` session. `/usage off` hides the separate usage message line after provider turns. `/effort` controls Codex app-server reasoning effort for new `Agent` sessions; `off` leaves effort unset so Codex uses its provider default.
 
 Exact token and cost usage are only displayed when the provider CLI emits exact usage. RhinoAgent does not estimate usage.
+
+## Conversation Memory Index
+
+Completed turns are added to a bounded in-session index using only the user's message, the visible assistant response, and compact tool-count metadata. Hidden provider prompts, hidden tool blocks, and raw tool output are excluded. Identical turns are deduplicated, individual messages are length-bounded, and casual turns are batched so memory maintenance does not require an extra provider call after every message.
+
+The index flushes automatically after four pending turns, after a successful tool action, when a turn explicitly concerns durable memory, and when the `Agent` session exits. `/memory index` flushes it immediately. The private maintenance pass merges durable goals, decisions, constraints, conventions, tasks, and completed work into the generated Agent Notes section of the active `.3dm`; it does not append a raw conversation transcript or overwrite user-authored memory sections.
 
 ## Provider Process Modes
 

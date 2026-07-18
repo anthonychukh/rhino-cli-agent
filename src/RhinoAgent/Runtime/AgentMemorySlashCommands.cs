@@ -5,7 +5,11 @@ namespace RhinoAgent.Runtime;
 
 public static class AgentMemorySlashCommands
 {
-    public static void Handle(string arg, AgentConfig config, AgentServices services)
+    public static void Handle(
+        string arg,
+        AgentConfig config,
+        AgentServices services,
+        AgentSession? session = null)
     {
         var parts = arg.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
         var command = parts.Length > 0 ? parts[0].ToLowerInvariant() : "status";
@@ -32,6 +36,9 @@ public static class AgentMemorySlashCommands
                 return;
             case "refresh":
                 Refresh(config, services);
+                return;
+            case "index":
+                IndexConversation(config, session);
                 return;
             case "undo":
                 Undo(rest, services);
@@ -60,7 +67,7 @@ public static class AgentMemorySlashCommands
                 CommandLineUi.Debug(AgentMemoryStore.DescribeDebug(doc));
                 return;
             default:
-                CommandLineUi.Debug("Usage: /memory status|open|show|create|refresh|undo [steps]|history|reset|import <path>|export [path]|on|off|debug");
+                CommandLineUi.Debug("Usage: /memory status|open|show|create|refresh|index|undo [steps]|history|reset|import <path>|export [path]|on|off|debug");
                 return;
         }
     }
@@ -87,6 +94,40 @@ public static class AgentMemorySlashCommands
         catch (Exception ex)
         {
             CommandLineUi.Debug($"Memory refresh failed: {ex.Message}");
+        }
+    }
+
+    private static void IndexConversation(AgentConfig config, AgentSession? session)
+    {
+        if (session is null)
+        {
+            CommandLineUi.Debug("Conversation indexing is available inside an active Agent session.");
+            return;
+        }
+
+        var timeoutSeconds = Math.Max(30, config.ProviderTurnTimeoutSeconds);
+        using var timeoutCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        try
+        {
+            var result = RhinoTaskPump.Run(
+                session.IndexConversationAsync,
+                timeoutCancellation.Token);
+            if (result.Updated)
+                CommandLineUi.Debug($"Conversation indexed into memory: {result.Reason}. Use /memory undo to revert.");
+            else if (!result.Completed)
+                CommandLineUi.Debug($"Conversation indexing remains pending: {result.Message}");
+            else
+                CommandLineUi.Debug($"Conversation index unchanged: {result.Message}");
+        }
+        catch (OperationCanceledException)
+        {
+            CommandLineUi.Debug(timeoutCancellation.IsCancellationRequested
+                ? $"Conversation indexing timed out after {timeoutSeconds} seconds."
+                : "Conversation indexing was canceled.");
+        }
+        catch (Exception ex)
+        {
+            CommandLineUi.Debug($"Conversation indexing failed: {ex.Message}");
         }
     }
 

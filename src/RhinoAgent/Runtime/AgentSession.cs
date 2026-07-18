@@ -16,6 +16,7 @@ public sealed class AgentSession
     private readonly ApprovalService _approvals;
     private readonly SkillStore _skillStore;
     private readonly AgentMemoryUpdateService? _memoryUpdater;
+    private readonly AgentConversationIndex _conversationIndex = new();
     private readonly List<(string Role, string Text)> _history = [];
     private readonly List<string> _queuedSkillNames = [];
 
@@ -77,6 +78,8 @@ public sealed class AgentSession
             ? "  Active provider session: none captured yet"
             : $"  Active provider session: {provider.ActiveSessionId}";
     }
+
+    public int PendingConversationIndexTurnCount => _conversationIndex.PendingTurnCount;
 
     public async Task<AgentTurnResult> RunUserTurnAsync(
         string userMessage,
@@ -152,7 +155,7 @@ public sealed class AgentSession
                     totalToolResults,
                     false,
                     $"Provider exited with code {providerResult.ExitCode}.");
-                await TryUpdateMemoryAsync(userMessage, result, cancellationToken);
+                await CompleteTurnAndIndexMemoryAsync(userMessage, result, cancellationToken);
                 return result;
             }
 
@@ -182,7 +185,7 @@ public sealed class AgentSession
                     totalToolResults,
                     false,
                     null);
-                await TryUpdateMemoryAsync(userMessage, result, cancellationToken);
+                await CompleteTurnAndIndexMemoryAsync(userMessage, result, cancellationToken);
                 return result;
             }
 
@@ -228,7 +231,7 @@ public sealed class AgentSession
                     totalToolResults,
                     false,
                     null);
-                await TryUpdateMemoryAsync(userMessage, result, cancellationToken);
+                await CompleteTurnAndIndexMemoryAsync(userMessage, result, cancellationToken);
                 return result;
             }
         }
@@ -242,32 +245,95 @@ public sealed class AgentSession
             totalToolResults,
             true,
             "Agent stopped after the configured tool-round limit.");
-        await TryUpdateMemoryAsync(userMessage, stoppedResult, cancellationToken);
+        await CompleteTurnAndIndexMemoryAsync(userMessage, stoppedResult, cancellationToken);
         return stoppedResult;
     }
 
-    private async Task TryUpdateMemoryAsync(string userMessage, AgentTurnResult result, CancellationToken cancellationToken)
+    public async Task<AgentMemoryMaintenanceResult> IndexConversationAsync(
+        CancellationToken cancellationToken = default)
     {
         if (_memoryUpdater is null)
+            return new AgentMemoryMaintenanceResult(false, "No memory updater is configured for this session.", "");
+
+        if (_conversationIndex.PendingTurnCount == 0)
+            return new AgentMemoryMaintenanceResult(false, "No unindexed conversation turns.", "");
+
+        var anyUpdated = false;
+        var lastMessage = "Conversation index is up to date.";
+        var lastReason = "";
+        while (_conversationIndex.PendingTurnCount > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var batch = _conversationIndex.GetNextBatch();
+            if (batch.Count == 0)
+                break;
+
+            var update = await _memoryUpdater.IndexConversationBatchAsync(batch, cancellationToken)
+                .ConfigureAwait(false);
+            lastMessage = update.Message;
+            lastReason = update.Reason;
+            anyUpdated |= update.Updated;
+            if (!update.Completed)
+                return new AgentMemoryMaintenanceResult(anyUpdated, lastMessage, lastReason, false);
+
+            _conversationIndex.MarkIndexed(batch);
+        }
+
+        return new AgentMemoryMaintenanceResult(anyUpdated, lastMessage, lastReason);
+    }
+
+    private async Task CompleteTurnAndIndexMemoryAsync(
+        string userMessage,
+        AgentTurnResult result,
+        CancellationToken cancellationToken)
+    {
+        if (_memoryUpdater is null || !_config.EnableDocumentMemory || !result.Success)
             return;
+
+        var droppedBeforeAdd = _conversationIndex.DroppedTurnCount;
+        if (!_conversationIndex.TryAdd(userMessage, result, out _))
+            return;
+        if (_conversationIndex.DroppedTurnCount > droppedBeforeAdd)
+            Debug("Dropped the oldest unindexed conversation turn because the bounded memory queue was full.");
+
+        if (!_conversationIndex.ShouldFlushAutomatically && !ShouldIndexImmediately(userMessage, result))
+        {
+            Debug($"Queued conversation turn for memory indexing ({_conversationIndex.PendingTurnCount}/{AgentConversationIndex.AutomaticFlushTurnCount}).");
+            return;
+        }
 
         try
         {
-            var update = await _memoryUpdater.UpdateAfterTurnAsync(userMessage, result, cancellationToken)
-                .ConfigureAwait(false);
+            var update = await IndexConversationAsync(cancellationToken).ConfigureAwait(false);
             if (update.Updated)
-                CommandLineUi.Debug($"Memory updated: {update.Reason}. Use /memory undo to revert.");
+                CommandLineUi.Debug($"Conversation indexed into memory: {update.Reason}. Use /memory undo to revert.");
+            else if (!update.Completed)
+                CommandLineUi.Debug($"Conversation indexing deferred: {update.Message}");
             else if (_config.ShowDebugMessages && !string.IsNullOrWhiteSpace(update.Message))
-                CommandLineUi.Debug($"Memory unchanged: {update.Message}");
+                CommandLineUi.Debug($"Conversation indexed; memory unchanged: {update.Message}");
         }
         catch (OperationCanceledException)
         {
-            CommandLineUi.Debug("Memory update skipped: canceled.");
+            CommandLineUi.Debug("Conversation indexing deferred: canceled.");
         }
         catch (Exception ex)
         {
-            CommandLineUi.Debug($"Memory update skipped: {ex.Message}");
+            CommandLineUi.Debug($"Conversation indexing deferred: {ex.Message}");
         }
+    }
+
+    private static bool ShouldIndexImmediately(string userMessage, AgentTurnResult result)
+    {
+        if (result.ToolResultCount > 0)
+            return true;
+
+        var text = userMessage.ToLowerInvariant();
+        string[] durableWords =
+        [
+            "remember", "memory", "constraint", "decision", "todo", "prefer",
+            "goal", "intent", "deadline", "warning", "important"
+        ];
+        return durableWords.Any(text.Contains);
     }
 
     private void PrintUsage(AgentProviderResult result)

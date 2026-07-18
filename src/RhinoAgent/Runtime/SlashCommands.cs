@@ -44,13 +44,13 @@ public static class SlashCommands
                 CommandLineUi.Debug("Conversation and saved provider resume state cleared for this working directory.");
                 return SlashCommandResult.Handled;
             case "/status":
-            {
-                StatusPrinter.Print(config, services);
-                var providerSessionStatus = session.GetProviderSessionStatus();
-                if (!string.IsNullOrWhiteSpace(providerSessionStatus))
-                    CommandLineUi.Debug(providerSessionStatus);
-                return SlashCommandResult.Handled;
-            }
+                {
+                    StatusPrinter.Print(config, services);
+                    var providerSessionStatus = session.GetProviderSessionStatus();
+                    if (!string.IsNullOrWhiteSpace(providerSessionStatus))
+                        CommandLineUi.Debug(providerSessionStatus);
+                    return SlashCommandResult.Handled;
+                }
             case "/continue":
             case "/resume":
                 ContinueOrResumeProviderConversation(session, arg);
@@ -68,7 +68,7 @@ public static class SlashCommands
                 LoginFlow.Run(config, services, LoginFlow.TryParseProvider(arg, out var provider) ? provider : null);
                 return SlashCommandResult.Handled;
             case "/memory":
-                AgentMemorySlashCommands.Handle(arg, config, services);
+                AgentMemorySlashCommands.Handle(arg, config, services, session);
                 return SlashCommandResult.Handled;
             case "/model":
                 SetModel(config, arg);
@@ -134,7 +134,7 @@ public static class SlashCommands
             "  /timeout <seconds>|off   Limit a provider turn so Agent does not wait forever",
             "  /skill ...                List, use, create, export, or manage RhinoAgent skills",
             "  /run <command>            Run a Rhino command manually while in Agent",
-            "  /memory <command>         Show, edit, refresh, import/export, or undo document memory",
+            "  /memory <command>         Show, index, edit, refresh, import/export, or undo document memory",
             "  ! <command>               Pass a command or alias directly to Rhino",
             "  _Command / -Command       Native Rhino command passthrough",
             "  Line / user aliases       Direct command and alias passthrough",

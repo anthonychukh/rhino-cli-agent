@@ -19,4 +19,19 @@ public sealed record AgentMemorySnapshot(
 
 public sealed record AgentMemorySaveResult(bool Changed, string Message, AgentMemoryState State);
 
-public sealed record AgentMemoryMaintenanceResult(bool Updated, string Message, string Reason);
+public sealed record AgentMemoryMaintenanceResult(
+    bool Updated,
+    string Message,
+    string Reason,
+    bool Completed = true);
+
+public sealed record AgentConversationTurn(
+    int Sequence,
+    string UserMessage,
+    string AssistantMessage,
+    int ToolCallCount,
+    int ToolResultCount,
+    string Fingerprint)
+{
+    public int CharacterCount => UserMessage.Length + AssistantMessage.Length;
+}
