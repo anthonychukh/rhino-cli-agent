@@ -25,7 +25,7 @@ public sealed class AgentPromptSelfTestCommand : Command
 
         var config = AgentConfigStore.Load();
         var timeoutSeconds = Math.Max(15, config.ProviderTurnTimeoutSeconds > 0 ? config.ProviderTurnTimeoutSeconds : 180);
-        var services = AgentServices.Create(config, doc);
+        using var services = AgentServices.Create(config, doc);
         var provider = services.ProviderFactory.ResolveInteractiveProvider(config);
         WriteProgress(progressPath, provider is null ? "provider-resolution-none" : $"provider-resolved: {provider.DisplayName}");
 

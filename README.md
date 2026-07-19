@@ -4,7 +4,9 @@ RhinoAgent is a Rhino 8 plug-in that starts a Claude Code / Codex-style agent di
 
 Type `Agent`, chat in the normal Rhino command prompt, and let the agent inspect or modify the active model through RhinoCommon, native Rhino commands, Rhino Python, C# scripts, and local project files.
 
-While the `Agent` prompt is active on Windows, press `Ctrl+V` with an image on the clipboard. RhinoAgent saves the image temporarily and inserts `[Image 1]` into the command line, then sends the actual image to Claude or Codex with the prompt. Copying an image file in Explorer and pressing `Ctrl+V` works too. You can also paste or drop a PNG, JPEG, GIF, or WebP file path into the prompt; quoted paths and paths dropped as the entire input are converted to the same attachment placeholder when submitted. A prompt supports up to eight images, 20 MB each.
+While the `Agent` prompt is active on Windows, copy or drag any regular local file into Rhino's command line. RhinoAgent accepts one or many Explorer files, standalone paths, and quoted paths inside a prompt. Placeholders use a lowercase extension plus a session-stable counter, such as `[.stl 1]`, `[.stp 1]`, and `[.stp 2]`; extensionless files use `[file 1]`. Multiple pasted or dropped files accumulate without submitting the prompt so you can type a request such as `Compare [.stp 1] with [.stp 2]`.
+
+PNG, JPEG, GIF, and WebP files up to 20 MB continue through each provider's native image channel. Every other file stays local: the prompt receives a structured attachment manifest and the model calls RhinoAgent's read-only attachment tools to choose an installed interpreter. Text gets a bounded preview, ZIP files get a non-extracting listing, recognized 3D formats are inspected in a disposable headless Rhino document, and unknown binaries get an honest bounded signature probe. User-owned files are never deleted or modified. Raw clipboard captures live only under `%TEMP%/RhinoAgent/attachments` and are released after the turn; a guarded 24-hour startup sweep handles crash leftovers.
 
 After you submit a prompt, the command line remains in Agent mode and shows the animated thinking state until the turn finishes. Provider work runs on a worker task while Rhino continues pumping its UI, so you can orbit the viewport and inspect panels without allowing a conflicting Rhino command to start. When the response is complete, the Agent prompt returns for the next message.
 
@@ -17,7 +19,7 @@ This is an early V0 meant for hands-on testing.
 - Target: Rhino 8, Windows and macOS
 - Plug-in format: RhinoCommon `.rhp`
 - Providers: Claude Code CLI and Codex CLI
-- Image prompts: clipboard paste on Windows plus pasted/dropped image paths; native multimodal transport to both providers
+- File prompts: arbitrary regular files, multi-file paste/drop, extension-number placeholders, local interpreter tools, and native multimodal image transport
 - Auth: delegates to the official provider CLI login flows
 - Session persistence: Claude Code and Codex long-running sessions are saved and resumed by working directory; `/clear` starts fresh
 - Grasshopper: planned, not implemented yet
@@ -129,7 +131,7 @@ Slash commands inside `Agent`:
 
 - `ask`: ask before every tool call.
 - `auto`: run read/modeling tools, ask before high-impact script/file operations.
-- `full`: execute all RhinoAgent tool calls without prompting.
+- `full`: execute RhinoAgent tool calls without prompting, except operations such as importing an attachment or changing saved skills that are always confirmation-gated.
 - `plan`: show intended tool calls without executing them.
 
 `/debug off` hides provider progress and tool execution debug messages inside the active `Agent` session. `/usage off` hides the separate usage message line after provider turns. `/effort` controls Codex app-server reasoning effort for new `Agent` sessions; `off` leaves effort unset so Codex uses its provider default.
@@ -170,6 +172,11 @@ Current tools:
 - `fetch_url`
 - `read_file`
 - `write_file`
+- `attachment_info`
+- `inspect_attachment`
+- `compare_attachments`
+- `list_attachment_interpreters`
+- `import_attachment`
 - `list_skills`
 - `read_skill_file`
 - `create_skill`
@@ -178,6 +185,8 @@ Current tools:
 - `export_skill`
 
 This is deliberately close to the tool shape used by Rhino MCP projects, but without requiring a separate MCP bridge between the model and Rhino.
+
+`attachment_info`, `inspect_attachment`, and `compare_attachments` are read-only. `inspect_attachment` dispatches through an ordered interpreter registry and never executes a file. For `.3dm`, `.stp`, `.step`, `.stl`, and other recognized Rhino-importable formats it uses a disposable headless document, leaving the active document unchanged. `import_attachment` is deliberately separate because it changes the active document and always asks for confirmation, including in `full` mode.
 
 `capture_viewport` writes PNG files and a compact JSON manifest under the system temp folder. Use exact model tools first for dimensions, object IDs, layers, topology, and other CAD facts; use viewport capture when visual feedback matters, such as silhouette, framing, overlap, recognizability, or whether a generated model looks right.
 
@@ -248,7 +257,7 @@ Rhino for Mac may launch without your shell's full `PATH`. RhinoAgent checks com
 
 ## Security
 
-`run_command`, `run_python`, `execute_csharp`, and `write_file` are powerful. They can change the active model and local files. `capture_viewport` is read-only for the model, but it writes temporary PNG/JSON files and can reveal whatever is visible in the selected viewport. Start in `ask` or `plan` mode when testing on real work.
+`run_command`, `run_python`, `execute_csharp`, `write_file`, and `import_attachment` are powerful. They can change the active model and local files. Attached files are treated as untrusted: RhinoAgent does not execute them, archive inspection does not extract them, and user-owned paths are never cleanup targets. `capture_viewport` is read-only for the model, but it writes temporary PNG/JSON files and can reveal whatever is visible in the selected viewport. Start in `ask` or `plan` mode when testing on real work.
 
 ## Future TODOs
 

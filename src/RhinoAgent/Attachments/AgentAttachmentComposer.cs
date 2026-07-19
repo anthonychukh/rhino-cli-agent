@@ -8,24 +8,14 @@ using DrawingImageFormat = System.Drawing.Imaging.ImageFormat;
 
 namespace RhinoAgent.Attachments;
 
-internal sealed partial class AgentImageComposer : IDisposable
+internal sealed partial class AgentAttachmentComposer
 {
-    private const int MaximumImages = 8;
-    private const long MaximumImageBytes = 20L * 1024 * 1024;
+    private readonly AgentAttachmentStore _store;
 
-    private static readonly IReadOnlyDictionary<string, string> SupportedMediaTypes =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            [".png"] = "image/png",
-            [".jpg"] = "image/jpeg",
-            [".jpeg"] = "image/jpeg",
-            [".gif"] = "image/gif",
-            [".webp"] = "image/webp"
-        };
-
-    private readonly List<AgentImageAttachment> _attachments = [];
-    private readonly HashSet<string> _ownedPaths = new(StringComparer.OrdinalIgnoreCase);
-    private bool _disposed;
+    public AgentAttachmentComposer(AgentAttachmentStore store)
+    {
+        _store = store;
+    }
 
     public string? LastCaptureError { get; private set; }
 
@@ -37,10 +27,29 @@ internal sealed partial class AgentImageComposer : IDisposable
         try
         {
             var clipboard = Clipboard.Instance;
+            if (clipboard.ContainsUris)
+            {
+                var placeholders = new List<string>();
+                foreach (var uri in clipboard.Uris ?? [])
+                {
+                    if (!uri.IsFile
+                        || !TryAttachPath(uri.LocalPath, isTemporary: false, out var attachment, out _))
+                        continue;
+
+                    placeholders.Add(attachment.Placeholder);
+                }
+
+                if (placeholders.Count > 0)
+                {
+                    insertion = string.Join(" ", placeholders.Distinct(StringComparer.OrdinalIgnoreCase));
+                    return true;
+                }
+            }
+
             if (clipboard.ContainsImage)
             {
                 if (TrySaveClipboardImage(clipboard, out var path, out var error)
-                    && TryAttachCapturedImage(path, out insertion, out error))
+                    && TryAttachCapturedFile(path, out insertion, out error))
                     return true;
 
                 LastCaptureError = error;
@@ -49,34 +58,13 @@ internal sealed partial class AgentImageComposer : IDisposable
             var nativeError = "";
             if (OperatingSystem.IsWindows()
                 && TrySaveWindowsClipboardImage(out var nativePath, out nativeError)
-                && TryAttachCapturedImage(nativePath, out insertion, out nativeError))
+                && TryAttachCapturedFile(nativePath, out insertion, out nativeError))
                 return true;
 
-            if (!clipboard.ContainsUris)
-            {
-                LastCaptureError ??= string.IsNullOrWhiteSpace(nativeError)
-                    ? "The clipboard does not expose supported image data."
-                    : nativeError;
-                return false;
-            }
-
-            var placeholders = new List<string>();
-            foreach (var uri in clipboard.Uris ?? [])
-            {
-                if (!uri.IsFile
-                    || !TryAttachPath(uri.LocalPath, isTemporary: false, out var attachment, out _))
-                    continue;
-
-                placeholders.Add(attachment.Placeholder);
-                if (_attachments.Count >= MaximumImages)
-                    break;
-            }
-
-            if (placeholders.Count == 0)
-                return false;
-
-            insertion = string.Join(" ", placeholders);
-            return true;
+            LastCaptureError ??= string.IsNullOrWhiteSpace(nativeError)
+                ? "The clipboard does not expose file or image data."
+                : nativeError;
+            return false;
         }
         catch (Exception ex)
         {
@@ -85,12 +73,12 @@ internal sealed partial class AgentImageComposer : IDisposable
         }
     }
 
-    private bool TryAttachCapturedImage(string path, out string insertion, out string error)
+    private bool TryAttachCapturedFile(string path, out string insertion, out string error)
     {
         insertion = "";
         if (!TryAttachPath(path, isTemporary: true, out var attachment, out error))
         {
-            TryDeleteFileAndDirectory(path);
+            TryDeleteCapturedFile(path);
             return false;
         }
 
@@ -100,8 +88,8 @@ internal sealed partial class AgentImageComposer : IDisposable
 
     public AgentUserMessage Compose(string input)
     {
-        var text = ResolveImagePaths(input.Trim());
-        var selected = _attachments
+        var text = ResolveAttachmentPaths(input.Trim());
+        var selected = _store.Attachments
             .Where(attachment => text.Contains(attachment.Placeholder, StringComparison.OrdinalIgnoreCase))
             .ToArray();
         return new AgentUserMessage(text, selected);
@@ -110,70 +98,13 @@ internal sealed partial class AgentImageComposer : IDisposable
     internal bool TryAttachPath(
         string path,
         bool isTemporary,
-        out AgentImageAttachment attachment,
+        out AgentAttachment attachment,
         out string error)
     {
-        attachment = null!;
-        error = "";
-        if (_attachments.Count >= MaximumImages)
-        {
-            error = $"A prompt can contain at most {MaximumImages} images.";
-            return false;
-        }
-
-        string fullPath;
-        try
-        {
-            fullPath = Path.GetFullPath(path.Trim().Trim('"'));
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-            return false;
-        }
-
-        var existing = _attachments.FirstOrDefault(item =>
-            string.Equals(item.LocalPath, fullPath, StringComparison.OrdinalIgnoreCase));
-        if (existing is not null)
-        {
-            attachment = existing;
-            return true;
-        }
-
-        var extension = Path.GetExtension(fullPath);
-        if (!SupportedMediaTypes.TryGetValue(extension, out var mediaType))
-        {
-            error = $"Unsupported image type: {extension}. Use PNG, JPEG, GIF, or WebP.";
-            return false;
-        }
-
-        var file = new FileInfo(fullPath);
-        if (!file.Exists)
-        {
-            error = $"Image file was not found: {fullPath}";
-            return false;
-        }
-
-        if (file.Length <= 0 || file.Length > MaximumImageBytes)
-        {
-            error = $"Image must be between 1 byte and {MaximumImageBytes / (1024 * 1024)} MB: {file.Name}";
-            return false;
-        }
-
-        attachment = new AgentImageAttachment(
-            _attachments.Count + 1,
-            fullPath,
-            file.Name,
-            mediaType,
-            file.Length,
-            isTemporary);
-        _attachments.Add(attachment);
-        if (isTemporary)
-            _ownedPaths.Add(fullPath);
-        return true;
+        return _store.TryRegister(path, isTemporary, out attachment, out error);
     }
 
-    private string ResolveImagePaths(string input)
+    private string ResolveAttachmentPaths(string input)
     {
         if (input.Length == 0)
             return input;
@@ -183,20 +114,27 @@ internal sealed partial class AgentImageComposer : IDisposable
             && TryAttachPath(wholePath, isTemporary: false, out var wholeAttachment, out _))
             return wholeAttachment.Placeholder;
 
-        var text = QuotedImagePathRegex().Replace(input, match =>
+        var text = QuotedAttachmentPathRegex().Replace(input, match =>
             TryAttachPath(match.Groups["path"].Value, isTemporary: false, out var attachment, out _)
                 ? attachment.Placeholder
                 : match.Value);
 
-        return UnquotedImagePathRegex().Replace(text, match =>
-            TryAttachPath(match.Groups["path"].Value, isTemporary: false, out var attachment, out _)
-                ? attachment.Placeholder
-                : match.Value);
+        return UnquotedAttachmentPathRegex().Replace(text, match =>
+        {
+            var candidate = match.Groups["path"].Value;
+            if (TryAttachPath(candidate, isTemporary: false, out var attachment, out _))
+                return attachment.Placeholder;
+
+            candidate = candidate.TrimEnd(',', ';', ':', '.', ')', ']', '}');
+            return TryAttachPath(candidate, isTemporary: false, out attachment, out _)
+                ? attachment.Placeholder + match.Groups["path"].Value[candidate.Length..]
+                : match.Value;
+        });
     }
 
     private bool TrySaveClipboardImage(Clipboard clipboard, out string path, out string error)
     {
-        path = CreateClipboardImagePath();
+        path = _store.CreateTemporaryFilePath("clipboard.png");
         error = "";
         var directory = Path.GetDirectoryName(path)!;
 
@@ -207,7 +145,7 @@ internal sealed partial class AgentImageComposer : IDisposable
             if (image is null)
             {
                 error = "The clipboard reported an image but did not return image data.";
-                TryDeleteEmptyDirectory(directory);
+                TryDeleteCapturedFile(path);
                 return false;
             }
 
@@ -226,14 +164,14 @@ internal sealed partial class AgentImageComposer : IDisposable
         catch (Exception ex)
         {
             error = $"Could not capture the clipboard image: {ex.Message}";
-            TryDeleteEmptyDirectory(directory);
+            TryDeleteCapturedFile(path);
             return false;
         }
     }
 
-    private static bool TrySaveWindowsClipboardImage(out string path, out string error)
+    private bool TrySaveWindowsClipboardImage(out string path, out string error)
     {
-        path = CreateClipboardImagePath();
+        path = _store.CreateTemporaryFilePath("clipboard.png");
         error = "";
         var directory = Path.GetDirectoryName(path)!;
 
@@ -243,7 +181,7 @@ internal sealed partial class AgentImageComposer : IDisposable
             if (!OpenClipboard(IntPtr.Zero))
             {
                 error = $"Windows could not open the clipboard (error {Marshal.GetLastPInvokeError()}).";
-                TryDeleteEmptyDirectory(directory);
+                TryDeleteCapturedFile(path);
                 return false;
             }
 
@@ -305,13 +243,13 @@ internal sealed partial class AgentImageComposer : IDisposable
         catch (Exception ex)
         {
             error = $"Could not capture the native Windows clipboard image: {ex.Message}";
-            TryDeleteFileAndDirectory(path);
+            TryDeleteCapturedFile(path);
             return false;
         }
         finally
         {
             if (!File.Exists(path))
-                TryDeleteEmptyDirectory(directory);
+                TryDeleteCapturedFile(path);
         }
     }
 
@@ -345,57 +283,19 @@ internal sealed partial class AgentImageComposer : IDisposable
         return file;
     }
 
-    private static string CreateClipboardImagePath()
+    private void TryDeleteCapturedFile(string path)
     {
-        var directory = Path.Combine(
-            Path.GetTempPath(),
-            "RhinoAgent",
-            "attachments",
-            Guid.NewGuid().ToString("N"));
-        return Path.Combine(directory, "clipboard.png");
-    }
-
-    public void Dispose()
-    {
-        if (_disposed)
+        if (!Path.GetFullPath(path).StartsWith(
+                Path.GetFullPath(_store.SessionRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase))
             return;
 
-        _disposed = true;
-        foreach (var path in _ownedPaths)
-        {
-            try
-            {
-                File.Delete(path);
-                TryDeleteEmptyDirectory(Path.GetDirectoryName(path));
-            }
-            catch
-            {
-                // Temporary clipboard images are best-effort cleanup.
-            }
-        }
-    }
-
-    private static void TryDeleteEmptyDirectory(string? path)
-    {
-        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
-            return;
-
-        try
-        {
-            Directory.Delete(path, recursive: false);
-        }
-        catch
-        {
-            // The directory may contain a provider artifact or another capture.
-        }
-    }
-
-    private static void TryDeleteFileAndDirectory(string path)
-    {
         try
         {
             File.Delete(path);
-            TryDeleteEmptyDirectory(Path.GetDirectoryName(path));
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
+                Directory.Delete(directory, recursive: false);
         }
         catch
         {
@@ -403,11 +303,11 @@ internal sealed partial class AgentImageComposer : IDisposable
         }
     }
 
-    [GeneratedRegex("[\\\"'](?<path>(?:[A-Za-z]:\\\\|\\\\\\\\)[^\\\"']+?\\.(?:png|jpe?g|gif|webp))[\\\"']", RegexOptions.IgnoreCase)]
-    private static partial Regex QuotedImagePathRegex();
+    [GeneratedRegex("[\\\"'](?<path>(?:[A-Za-z]:\\\\|\\\\\\\\)[^\\\"']+)[\\\"']", RegexOptions.IgnoreCase)]
+    private static partial Regex QuotedAttachmentPathRegex();
 
-    [GeneratedRegex("(?<path>(?:[A-Za-z]:\\\\|\\\\\\\\)[^\\s\\\"'<>|?*]+\\.(?:png|jpe?g|gif|webp))", RegexOptions.IgnoreCase)]
-    private static partial Regex UnquotedImagePathRegex();
+    [GeneratedRegex("(?<path>(?:[A-Za-z]:\\\\|\\\\\\\\)[^\\s\\\"'<>|?*]+)", RegexOptions.IgnoreCase)]
+    private static partial Regex UnquotedAttachmentPathRegex();
 
     private const uint ClipboardFormatBitmap = 2;
     private const uint ClipboardFormatDib = 8;

@@ -20,7 +20,7 @@ public sealed class AgentProviderSelfTestCommand : Command
         WriteProgress(progressPath, "started");
         var config = CreateSmokeConfig(AgentConfigStore.Load());
         WriteProgress(progressPath, "config-loaded");
-        var services = AgentServices.Create(config, doc);
+        using var services = AgentServices.Create(config, doc);
         WriteProgress(progressPath, "services-created");
         var provider = services.ProviderFactory.ResolveInteractiveProvider(config);
         WriteProgress(progressPath, provider is null ? "provider-resolution-none" : $"provider-resolved: {provider.DisplayName}");

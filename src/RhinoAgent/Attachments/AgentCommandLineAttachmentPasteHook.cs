@@ -3,7 +3,7 @@ using Rhino;
 
 namespace RhinoAgent.Attachments;
 
-internal sealed class AgentCommandLineImagePasteHook : IDisposable
+internal sealed class AgentCommandLineAttachmentPasteHook : IDisposable
 {
     private const int WhKeyboardLowLevel = 13;
     private const int HcAction = 0;
@@ -11,7 +11,7 @@ internal sealed class AgentCommandLineImagePasteHook : IDisposable
     private const int VkControl = 0x11;
     private const int VkV = 0x56;
 
-    private readonly AgentImageComposer _composer;
+    private readonly AgentAttachmentComposer _composer;
     private readonly HookProcedure _procedure;
     private IntPtr _hook;
     private bool _vKeyDown;
@@ -19,7 +19,7 @@ internal sealed class AgentCommandLineImagePasteHook : IDisposable
 
     public static int LastInstallError { get; private set; }
 
-    private AgentCommandLineImagePasteHook(AgentImageComposer composer)
+    private AgentCommandLineAttachmentPasteHook(AgentAttachmentComposer composer)
     {
         _composer = composer;
         _procedure = HandleKeyboard;
@@ -31,12 +31,12 @@ internal sealed class AgentCommandLineImagePasteHook : IDisposable
         LastInstallError = _hook == IntPtr.Zero ? Marshal.GetLastPInvokeError() : 0;
     }
 
-    public static AgentCommandLineImagePasteHook? TryInstall(AgentImageComposer composer)
+    public static AgentCommandLineAttachmentPasteHook? TryInstall(AgentAttachmentComposer composer)
     {
         if (!OperatingSystem.IsWindows())
             return null;
 
-        var hook = new AgentCommandLineImagePasteHook(composer);
+        var hook = new AgentCommandLineAttachmentPasteHook(composer);
         if (hook._hook != IntPtr.Zero)
             return hook;
 

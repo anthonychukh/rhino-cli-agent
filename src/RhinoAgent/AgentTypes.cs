@@ -51,24 +51,46 @@ public sealed record ProviderStatus(
 
 public sealed record AgentProgress(string Message, bool IsTransient = false);
 
-public sealed record AgentImageAttachment(
+public enum AgentAttachmentKind
+{
+    Image,
+    Text,
+    Document,
+    Archive,
+    Model3D,
+    Binary
+}
+
+public sealed record AgentAttachment(
+    string Id,
     int Number,
+    string Placeholder,
     string LocalPath,
     string FileName,
+    string Extension,
     string MediaType,
     long SizeBytes,
-    bool IsTemporary)
-{
-    public string Placeholder => $"[Image {Number}]";
-}
+    AgentAttachmentKind Kind,
+    bool IsTemporary,
+    bool CanSendToProviderAsImage);
 
 public sealed record AgentUserMessage(
     string Text,
-    IReadOnlyList<AgentImageAttachment> Images);
+    IReadOnlyList<AgentAttachment> Attachments)
+{
+    public IReadOnlyList<AgentAttachment> Images => Attachments
+        .Where(attachment => attachment.CanSendToProviderAsImage)
+        .ToArray();
+}
 
 public sealed record AgentProviderPrompt(
     string Text,
-    IReadOnlyList<AgentImageAttachment> Images);
+    IReadOnlyList<AgentAttachment> Attachments)
+{
+    public IReadOnlyList<AgentAttachment> Images => Attachments
+        .Where(attachment => attachment.CanSendToProviderAsImage)
+        .ToArray();
+}
 
 public sealed record TokenUsage(
     long? InputTokens,

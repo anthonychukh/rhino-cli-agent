@@ -5,6 +5,7 @@ using Rhino;
 using Rhino.ApplicationSettings;
 using Rhino.Commands;
 using Rhino.DocObjects;
+using Rhino.FileIO;
 using Rhino.Geometry;
 using RhinoAgent.Attachments;
 using RhinoAgent.Config;
@@ -58,8 +59,8 @@ public sealed class AgentSelfTestCommand : Command
         var viewportCaptureAwareness = RunViewportCaptureAwareness(doc);
         success = success && viewportCaptureAwareness.Ok;
 
-        var imageAttachments = RunImageAttachmentSelfTest(doc);
-        success = success && imageAttachments.Ok;
+        var attachments = RunAttachmentSelfTest(doc);
+        success = success && attachments.Ok;
 
         var skillSystem = RunSkillSystemSelfTest(doc);
         success = success && skillSystem.Ok;
@@ -103,7 +104,7 @@ public sealed class AgentSelfTestCommand : Command
             },
             scriptedToolRecovery,
             viewportCaptureAwareness,
-            imageAttachments,
+            attachments,
             skillSystem,
             documentMemory,
             commands = new[]
@@ -136,16 +137,44 @@ public sealed class AgentSelfTestCommand : Command
     public static string GetOutputPath() =>
         Path.Combine(Path.GetTempPath(), "RhinoAgent", "self-test.json");
 
-    private static ImageAttachmentSelfTestResult RunImageAttachmentSelfTest(RhinoDoc doc)
+    private static AttachmentSelfTestResult RunAttachmentSelfTest(RhinoDoc doc)
     {
-        var root = Path.Combine(Path.GetTempPath(), "RhinoAgent", "image self test " + Guid.NewGuid().ToString("N"));
+        var root = Path.Combine(Path.GetTempPath(), "RhinoAgent", "attachment-self-test-" + Guid.NewGuid().ToString("N"));
         var imagePath = Path.Combine(root, "one-pixel.png");
+        var firstStepPath = Path.Combine(root, "first model.stp");
+        var secondStepPath = Path.Combine(root, "second model.STP");
+        var modelPath = Path.Combine(root, "reference model.3dm");
+        var stlPath = Path.Combine(root, "triangle.stl");
+        var fbxPath = Path.Combine(root, "triangle.fbx");
+        var unknownPath = Path.Combine(root, "mystery.custom-format");
+        var extensionlessPath = Path.Combine(root, "README-NO-EXTENSION");
+        var attachmentRoot = Path.Combine(root, "owned-temp");
         var provider = new ScriptedAttachmentProvider();
         AgentTurnResult? turnResult = null;
         Exception? exception = null;
         var placeholderResolved = false;
+        var allFilesAccepted = false;
+        var extensionCountersOk = false;
+        var promptManifestOk = false;
+        var modelInspectionOk = false;
+        var stlInspectionOk = false;
+        var fbxInspectionOk = false;
+        var comparisonOk = false;
+        var binaryFallbackOk = false;
+        var activeDocumentUnchanged = false;
+        var temporaryCleaned = false;
+        var disposeCleanupOk = false;
+        var staleCleanupOk = false;
+        var originalsPreserved = false;
+        var importToolOk = false;
+        var fbxImportToolOk = false;
+        var importToolOutput = "";
+        var importStagingCleaned = false;
+        var importAlwaysPrompts = false;
         var claudeStreamJsonOk = false;
         var codexInputOk = false;
+        var tempPath = "";
+        AgentAttachmentStore? store = null;
 
         try
         {
@@ -153,31 +182,146 @@ public sealed class AgentSelfTestCommand : Command
             File.WriteAllBytes(
                 imagePath,
                 Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="));
-
-            AgentUserMessage message;
-            using (var composer = new AgentImageComposer())
+            File.WriteAllText(firstStepPath, "ISO-10303-21; HEADER; FILE_DESCRIPTION(('placeholder one'),'2;1'); ENDSEC; END-ISO-10303-21;");
+            File.WriteAllText(secondStepPath, "ISO-10303-21; HEADER; FILE_DESCRIPTION(('placeholder two'),'2;1'); ENDSEC; END-ISO-10303-21;");
+            File.WriteAllText(
+                stlPath,
+                "solid triangle\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\nvertex 10 0 0\nvertex 0 10 0\nendloop\nendfacet\nendsolid triangle\n");
+            var fbxDocument = RhinoDoc.CreateHeadless(null)
+                ?? throw new InvalidOperationException("Could not create the FBX fixture document.");
+            try
             {
-                message = composer.Compose($"Describe this image: \"{imagePath}\"");
-                placeholderResolved = message.Text == "Describe this image: [Image 1]"
-                    && message.Images.Count == 1
-                    && message.Images[0].LocalPath == imagePath;
-
-                var config = new AgentConfig
-                {
-                    PermissionMode = AgentPermissionMode.FullAccess,
-                    ProviderProcessMode = AgentProviderProcessMode.Stateless,
-                    EnableDocumentMemory = false,
-                    MaxToolRounds = 2
-                };
-                var toolHost = new RhinoToolHost(doc, config);
-                var approvals = new ApprovalService(config);
-                var session = new AgentSession(doc, config, provider, toolHost, approvals);
-                turnResult = session.RunUserTurnAsync(message).GetAwaiter().GetResult();
+                var fbxMesh = new Mesh();
+                fbxMesh.Vertices.Add(0, 0, 0);
+                fbxMesh.Vertices.Add(10, 0, 0);
+                fbxMesh.Vertices.Add(0, 10, 0);
+                fbxMesh.Faces.AddFace(0, 1, 2);
+                fbxMesh.Normals.ComputeNormals();
+                fbxDocument.Objects.AddMesh(fbxMesh);
+                if (!FileFbx.Write(fbxPath, fbxDocument, new FileFbxWriteOptions()))
+                    throw new InvalidOperationException("Could not write the FBX attachment fixture.");
             }
+            finally
+            {
+                fbxDocument.Dispose();
+            }
+            File.WriteAllBytes(unknownPath, [0, 1, 2, 3, 65, 66, 67, 68, 0, 255]);
+            File.WriteAllText(extensionlessPath, "Extensionless attachments are still accepted and interpreted as text when their bytes are text-like.");
+
+            using (var file = new File3dm())
+            {
+                file.Settings.ModelUnitSystem = UnitSystem.Millimeters;
+                file.Objects.AddBrep(new Box(new BoundingBox(0, 0, 0, 10, 20, 30)).ToBrep());
+                if (!file.Write(modelPath, 8))
+                    throw new InvalidOperationException("Could not write the 3DM attachment fixture.");
+            }
+
+            var staleDirectory = Path.Combine(attachmentRoot, "stale-session");
+            Directory.CreateDirectory(staleDirectory);
+            File.WriteAllText(Path.Combine(staleDirectory, "leftover.tmp"), "stale");
+            Directory.SetLastWriteTimeUtc(staleDirectory, DateTime.UtcNow - TimeSpan.FromHours(48));
+            store = new AgentAttachmentStore(attachmentRoot);
+            staleCleanupOk = !Directory.Exists(staleDirectory);
+            var composer = new AgentAttachmentComposer(store);
+            tempPath = store.CreateTemporaryFilePath("ephemeral.bin");
+            File.WriteAllBytes(tempPath, [9, 8, 7, 6]);
+            if (!composer.TryAttachPath(tempPath, isTemporary: true, out var temporaryAttachment, out var temporaryError))
+                throw new InvalidOperationException(temporaryError);
+
+            var message = composer.Compose(
+                $"Compare \"{firstStepPath}\" with \"{secondStepPath}\", inspect \"{modelPath}\", \"{stlPath}\", \"{fbxPath}\", \"{unknownPath}\", \"{extensionlessPath}\", and \"{imagePath}\".");
+            placeholderResolved = message.Text.Contains("[.stp 1]", StringComparison.Ordinal)
+                && message.Text.Contains("[.stp 2]", StringComparison.Ordinal)
+                && message.Text.Contains("[.3dm 1]", StringComparison.Ordinal)
+                && message.Text.Contains("[.stl 1]", StringComparison.Ordinal)
+                && message.Text.Contains("[.fbx 1]", StringComparison.Ordinal)
+                && message.Text.Contains("[.custom-format 1]", StringComparison.Ordinal)
+                && message.Text.Contains("[file 1]", StringComparison.Ordinal)
+                && message.Text.Contains("[.png 1]", StringComparison.Ordinal);
+            extensionCountersOk = message.Attachments.Single(value => value.LocalPath == firstStepPath).Placeholder == "[.stp 1]"
+                && message.Attachments.Single(value => value.LocalPath == secondStepPath).Placeholder == "[.stp 2]";
+            allFilesAccepted = message.Attachments.Count == 8
+                && message.Images.Count == 1
+                && message.Attachments.Any(value => value.LocalPath == extensionlessPath && value.Placeholder == "[file 1]");
+
+            var config = new AgentConfig
+            {
+                PermissionMode = AgentPermissionMode.FullAccess,
+                ProviderProcessMode = AgentProviderProcessMode.Stateless,
+                EnableDocumentMemory = false,
+                MaxToolRounds = 2
+            };
+            var toolHost = new RhinoToolHost(doc, config, attachmentStore: store);
+            var approvals = new ApprovalService(config);
+            var session = new AgentSession(doc, config, provider, toolHost, approvals);
+
+            var importCall = new ToolCallRequest
+            {
+                Tool = "import_attachment",
+                Arguments = new Dictionary<string, object?> { ["attachment"] = "[.stl 1]" }
+            };
+            importAlwaysPrompts = toolHost.AlwaysRequiresPrompt(importCall.Tool)
+                && approvals.RequiresPrompt(importCall, toolHost);
+            var importDocument = RhinoDoc.CreateHeadless(null);
+            if (importDocument is not null)
+            {
+                try
+                {
+                    var importHost = new RhinoToolHost(importDocument, config, attachmentStore: store);
+                    var importResult = importHost.ExecuteAsync(importCall).GetAwaiter().GetResult();
+                    importToolOutput = importResult.Output;
+                    importToolOk = importResult.Success && importDocument.Objects.Count > 0;
+                    var fbxImportResult = importHost.ExecuteAsync(new ToolCallRequest
+                    {
+                        Tool = "import_attachment",
+                        Arguments = new Dictionary<string, object?> { ["attachment"] = "[.fbx 1]" }
+                    }).GetAwaiter().GetResult();
+                    importToolOutput += System.Environment.NewLine + fbxImportResult.Output;
+                    fbxImportToolOk = fbxImportResult.Success && importDocument.Objects.Count > 1;
+                    importStagingCleaned = !Directory.EnumerateFiles(
+                        store.SessionRoot,
+                        "*.3dm",
+                        SearchOption.AllDirectories).Any();
+                }
+                finally
+                {
+                    importDocument.Dispose();
+                }
+            }
+
+            var activeObjectCount = doc.Objects.Count;
+            modelInspectionOk = ExecuteAttachmentTool(toolHost, "inspect_attachment", new Dictionary<string, object?>
+            {
+                ["attachment"] = "[.3dm 1]"
+            }).Success;
+            stlInspectionOk = ExecuteAttachmentTool(toolHost, "inspect_attachment", new Dictionary<string, object?>
+            {
+                ["attachment"] = "[.stl 1]"
+            }).Success;
+            fbxInspectionOk = ExecuteAttachmentTool(toolHost, "inspect_attachment", new Dictionary<string, object?>
+            {
+                ["attachment"] = "[.fbx 1]"
+            }).Success;
+            comparisonOk = ExecuteAttachmentTool(toolHost, "compare_attachments", new Dictionary<string, object?>
+            {
+                ["attachments"] = new[] { "[.3dm 1]", "[.stl 1]" }
+            }).Success;
+            var binaryResult = ExecuteAttachmentTool(toolHost, "inspect_attachment", new Dictionary<string, object?>
+            {
+                ["attachment"] = "[.custom-format 1]"
+            });
+            binaryFallbackOk = binaryResult.Success
+                && binaryResult.Output.Contains("binary-probe", StringComparison.OrdinalIgnoreCase);
+            activeDocumentUnchanged = doc.Objects.Count == activeObjectCount;
+            turnResult = session.RunUserTurnAsync(message).GetAwaiter().GetResult();
 
             var firstPrompt = provider.Prompts.FirstOrDefault();
             if (firstPrompt is not null)
             {
+                promptManifestOk = firstPrompt.Text.Contains("Attachments available for this turn:", StringComparison.Ordinal)
+                    && firstPrompt.Text.Contains("[.stp 1]", StringComparison.Ordinal)
+                    && firstPrompt.Text.Contains("[.stp 2]", StringComparison.Ordinal)
+                    && firstPrompt.Text.Contains("[file 1]", StringComparison.Ordinal);
                 using var claudeJson = JsonDocument.Parse(ClaudeCliProvider.BuildStreamJsonInput(firstPrompt));
                 var content = claudeJson.RootElement
                     .GetProperty("message")
@@ -198,6 +342,23 @@ public sealed class AgentSelfTestCommand : Command
                     && items[0].GetProperty("path").GetString() == imagePath
                     && items[1].GetProperty("type").GetString() == "text";
             }
+
+            store.ReleaseTemporary([temporaryAttachment]);
+            temporaryCleaned = !File.Exists(tempPath)
+                && !Directory.Exists(Path.GetDirectoryName(tempPath));
+
+            var disposeRoot = Path.Combine(root, "dispose-cleanup");
+            var disposeStore = new AgentAttachmentStore(disposeRoot);
+            var disposeTempPath = disposeStore.CreateTemporaryFilePath("dispose-me.bin");
+            File.WriteAllBytes(disposeTempPath, [1, 2, 3]);
+            if (!disposeStore.TryRegister(disposeTempPath, isTemporary: true, out _, out var disposeError))
+                throw new InvalidOperationException(disposeError);
+            var disposeSessionRoot = disposeStore.SessionRoot;
+            disposeStore.Dispose();
+            disposeCleanupOk = !File.Exists(disposeTempPath) && !Directory.Exists(disposeSessionRoot);
+
+            originalsPreserved = new[] { imagePath, firstStepPath, secondStepPath, modelPath, stlPath, fbxPath, unknownPath, extensionlessPath }
+                .All(File.Exists);
         }
         catch (Exception ex)
         {
@@ -205,6 +366,7 @@ public sealed class AgentSelfTestCommand : Command
         }
         finally
         {
+            store?.Dispose();
             try
             {
                 Directory.Delete(root, recursive: true);
@@ -219,14 +381,49 @@ public sealed class AgentSelfTestCommand : Command
         var firstRoundOnly = imageCounts.SequenceEqual([1, 0]);
         var ok = exception is null
             && placeholderResolved
+            && allFilesAccepted
+            && extensionCountersOk
+            && promptManifestOk
+            && modelInspectionOk
+            && stlInspectionOk
+            && fbxInspectionOk
+            && comparisonOk
+            && binaryFallbackOk
+            && activeDocumentUnchanged
+            && temporaryCleaned
+            && disposeCleanupOk
+            && staleCleanupOk
+            && originalsPreserved
+            && importToolOk
+            && fbxImportToolOk
+            && importStagingCleaned
+            && importAlwaysPrompts
             && claudeStreamJsonOk
             && codexInputOk
             && firstRoundOnly
             && turnResult?.Success == true;
 
-        return new ImageAttachmentSelfTestResult(
+        return new AttachmentSelfTestResult(
             ok,
             placeholderResolved,
+            allFilesAccepted,
+            extensionCountersOk,
+            promptManifestOk,
+            modelInspectionOk,
+            stlInspectionOk,
+            fbxInspectionOk,
+            comparisonOk,
+            binaryFallbackOk,
+            activeDocumentUnchanged,
+            temporaryCleaned,
+            disposeCleanupOk,
+            staleCleanupOk,
+            originalsPreserved,
+            importToolOk,
+            fbxImportToolOk,
+            importToolOutput,
+            importStagingCleaned,
+            importAlwaysPrompts,
             provider.Prompts.Count,
             imageCounts,
             firstRoundOnly,
@@ -235,6 +432,16 @@ public sealed class AgentSelfTestCommand : Command
             turnResult?.Success ?? false,
             FirstNonEmpty(exception?.Message, turnResult?.Error));
     }
+
+    private static ToolExecutionResult ExecuteAttachmentTool(
+        RhinoToolHost toolHost,
+        string tool,
+        Dictionary<string, object?> arguments) =>
+        toolHost.ExecuteAsync(new ToolCallRequest
+        {
+            Tool = tool,
+            Arguments = arguments
+        }).GetAwaiter().GetResult();
 
     private static SkillSystemSelfTestResult RunSkillSystemSelfTest(RhinoDoc doc)
     {
@@ -986,9 +1193,27 @@ public sealed class AgentSelfTestCommand : Command
         string VisibleText,
         string? Error);
 
-    private sealed record ImageAttachmentSelfTestResult(
+    private sealed record AttachmentSelfTestResult(
         bool Ok,
         bool PlaceholderResolved,
+        bool AllFilesAccepted,
+        bool ExtensionCountersOk,
+        bool PromptManifestOk,
+        bool ModelInspectionOk,
+        bool StlInspectionOk,
+        bool FbxInspectionOk,
+        bool ComparisonOk,
+        bool BinaryFallbackOk,
+        bool ActiveDocumentUnchanged,
+        bool TemporaryCleaned,
+        bool DisposeCleanupOk,
+        bool StaleCleanupOk,
+        bool OriginalsPreserved,
+        bool ImportToolOk,
+        bool FbxImportToolOk,
+        string ImportToolOutput,
+        bool ImportStagingCleaned,
+        bool ImportAlwaysPrompts,
         int ProviderPromptCount,
         IReadOnlyList<int> ImageCountsByRound,
         bool ImagesSentOnFirstRoundOnly,
@@ -1038,7 +1263,7 @@ public sealed class AgentSelfTestCommand : Command
         private int _turn;
 
         public AgentProviderKind Kind => AgentProviderKind.Codex;
-        public string DisplayName => "Scripted image-attachment self-test provider";
+        public string DisplayName => "Scripted general-attachment self-test provider";
         public AgentProviderProcessMode ProcessMode => AgentProviderProcessMode.Stateless;
         public List<AgentProviderPrompt> Prompts { get; } = [];
 
@@ -1050,14 +1275,14 @@ public sealed class AgentSelfTestCommand : Command
             cancellationToken.ThrowIfCancellationRequested();
             Prompts.Add(prompt);
             _turn++;
-            progress(new AgentProgress($"scripted image-attachment self-test turn {_turn}"));
+            progress(new AgentProgress($"scripted general-attachment self-test turn {_turn}"));
 
             var text = _turn == 1
                 ? """
-                  I will inspect the Rhino document context after reading the attached image.
-                  <rhino-agent>{"tool_calls":[{"tool":"document_summary","arguments":{}}]}</rhino-agent>
+                  I will inspect the attached model using RhinoAgent's read-only attachment interpreter.
+                  <rhino-agent>{"tool_calls":[{"tool":"inspect_attachment","arguments":{"attachment":"[.3dm 1]"}}]}</rhino-agent>
                   """
-                : "The image attachment was available on the first provider round and the tool follow-up completed.";
+                : "The image used native provider input, the other files stayed local, and the attachment inspection follow-up completed.";
             return Task.FromResult(new AgentProviderResult(
                 text,
                 "self-test",

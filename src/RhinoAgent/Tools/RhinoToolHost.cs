@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.RegularExpressions;
 using Rhino;
+using RhinoAgent.Attachments;
 using RhinoAgent.Runtime;
 using RhinoAgent.Skills;
 
@@ -14,6 +15,7 @@ public sealed class RhinoToolHost
     private static readonly HttpClient HttpClient = CreateHttpClient();
 
     private readonly RhinoDoc _doc;
+    private readonly AgentAttachmentStore _attachmentStore;
     private readonly SkillStore _skillStore;
     private readonly string _workingDirectory;
     private readonly Dictionary<string, Func<ToolCallRequest, Task<ToolExecutionResult>>> _tools;
@@ -24,7 +26,10 @@ public sealed class RhinoToolHost
         "run_command",
         "run_python",
         "execute_csharp",
-        "capture_viewport"
+        "capture_viewport",
+        "inspect_attachment",
+        "compare_attachments",
+        "import_attachment"
     };
     private readonly HashSet<string> _highImpactTools = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -32,6 +37,7 @@ public sealed class RhinoToolHost
         "run_python",
         "execute_csharp",
         "write_file",
+        "import_attachment",
         "create_skill",
         "update_skill",
         "delete_skill",
@@ -39,15 +45,21 @@ public sealed class RhinoToolHost
     };
     private readonly HashSet<string> _alwaysPromptTools = new(StringComparer.OrdinalIgnoreCase)
     {
+        "import_attachment",
         "create_skill",
         "update_skill",
         "delete_skill",
         "export_skill"
     };
 
-    public RhinoToolHost(RhinoDoc doc, AgentConfig config, SkillStore? skillStore = null)
+    public RhinoToolHost(
+        RhinoDoc doc,
+        AgentConfig config,
+        SkillStore? skillStore = null,
+        AgentAttachmentStore? attachmentStore = null)
     {
         _doc = doc;
+        _attachmentStore = attachmentStore ?? new AgentAttachmentStore();
         _skillStore = skillStore ?? new SkillStore();
         _workingDirectory = Providers.WorkingDirectoryResolver.Resolve(doc, config.WorkingDirectory);
         _tools = new(StringComparer.OrdinalIgnoreCase)
@@ -61,6 +73,11 @@ public sealed class RhinoToolHost
             ["fetch_url"] = FetchUrl,
             ["read_file"] = ReadFile,
             ["write_file"] = WriteFile,
+            ["attachment_info"] = AttachmentInfo,
+            ["inspect_attachment"] = InspectAttachment,
+            ["compare_attachments"] = CompareAttachments,
+            ["list_attachment_interpreters"] = ListAttachmentInterpreters,
+            ["import_attachment"] = ImportAttachment,
             ["list_skills"] = ListSkills,
             ["read_skill_file"] = ReadSkillFile,
             ["create_skill"] = CreateSkill,
@@ -73,6 +90,7 @@ public sealed class RhinoToolHost
     public bool HasTool(string name) => _tools.ContainsKey(name);
     public bool IsHighImpact(string name) => _highImpactTools.Contains(name);
     public bool AlwaysRequiresPrompt(string name) => _alwaysPromptTools.Contains(name);
+    public AgentAttachmentStore AttachmentStore => _attachmentStore;
 
     public string DescribeTools() =>
         """
@@ -85,6 +103,11 @@ public sealed class RhinoToolHost
         - fetch_url {"url":"https://example.com/product","max_chars":2500}: fetch a web page and return compact title, metadata, JSON-LD snippets, and readable text. Use this first for product-page modeling prompts.
         - read_file {"path":"relative/or/absolute"}: read a local text file.
         - write_file {"path":"relative/or/absolute","content":"..."}: write a local text file.
+        - attachment_info {"attachment":"[.stp 1]"}: return trusted metadata and available interpretation information for an attached file without reading its full contents.
+        - inspect_attachment {"attachment":"[.stp 1]","detail":"standard"}: choose the best available read-only interpreter. 3D files use a disposable headless Rhino document, text gets a bounded preview, ZIP gets a non-extracting listing, and any unknown binary gets a bounded signature probe.
+        - compare_attachments {"attachments":["[.stp 1]","[.stp 2]"]}: inspect multiple attached files with compatible interpreters and return aligned structured results for comparison.
+        - list_attachment_interpreters {}: list the attachment interpreters currently built into RhinoAgent.
+        - import_attachment {"attachment":"[.stp 1]"}: import a recognized 3D attachment into the active Rhino document. This changes the document and is approval-controlled.
         - list_skills {}: list saved RhinoAgent skills with names, descriptions, enabled state, and resource directories.
         - read_skill_file {"name":"skill-name","path":"SKILL.md","max_chars":8000}: read a text file inside a saved skill folder.
         - create_skill {"name":"skill-name","description":"...","overwrite":false,"files":[{"path":"SKILL.md","content":"..."},{"path":"references/details.md","content":"..."}]}: create a Codex-style RhinoAgent skill folder. Skill names use lowercase letters, digits, and hyphens.
@@ -95,11 +118,9 @@ public sealed class RhinoToolHost
 
     public string DescribeApproval(ToolCallRequest call)
     {
-        if (!_alwaysPromptTools.Contains(call.Tool))
-            return "";
-
         return call.Tool.ToLowerInvariant() switch
         {
+            "import_attachment" => DescribeAttachmentImportApproval(call),
             "create_skill" => DescribeSkillWriteApproval("Create skill", call),
             "update_skill" => DescribeSkillWriteApproval("Update skill", call),
             "delete_skill" => $"Delete skill: {GetString(call, "name") ?? "(missing name)"}",
@@ -267,6 +288,85 @@ public sealed class RhinoToolHost
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, content ?? "");
         return Success(call.Tool, $"Wrote {path}");
+    }
+
+    private Task<ToolExecutionResult> AttachmentInfo(ToolCallRequest call)
+    {
+        if (!TryResolveAttachment(call, out var attachment, out var error))
+            return Failure(call.Tool, error);
+
+        var output = JsonSerializer.Serialize(new
+        {
+            attachment = attachment.Placeholder,
+            id = attachment.Id,
+            name = attachment.FileName,
+            path = attachment.LocalPath,
+            extension = attachment.Extension,
+            mediaType = attachment.MediaType,
+            sizeBytes = attachment.SizeBytes,
+            kind = attachment.Kind.ToString(),
+            temporary = attachment.IsTemporary,
+            nativeProviderImage = attachment.CanSendToProviderAsImage,
+            sizeWarning = AgentAttachmentStore.GetSizeWarning(attachment),
+            exists = File.Exists(attachment.LocalPath)
+        }, JsonOptions.Loose);
+        return Success(call.Tool, output);
+    }
+
+    private Task<ToolExecutionResult> InspectAttachment(ToolCallRequest call)
+    {
+        if (!TryResolveAttachment(call, out var attachment, out var error))
+            return Failure(call.Tool, error);
+
+        var inspection = AgentAttachmentInspector.Inspect(attachment, GetString(call, "detail") ?? "standard");
+        var output = JsonSerializer.Serialize(inspection, JsonOptions.Loose);
+        return Task.FromResult(new ToolExecutionResult(call.Tool, inspection.Ok, output, true, false));
+    }
+
+    private Task<ToolExecutionResult> CompareAttachments(ToolCallRequest call)
+    {
+        var references = GetStringList(call, "attachments");
+        if (references.Count < 2)
+            return Failure(call.Tool, "compare_attachments requires at least two attachment placeholders or ids.");
+
+        var inspections = new List<AttachmentInspection>();
+        var unresolved = new List<string>();
+        foreach (var reference in references.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!_attachmentStore.TryResolve(reference, out var attachment))
+            {
+                unresolved.Add(reference);
+                continue;
+            }
+            inspections.Add(AgentAttachmentInspector.Inspect(attachment, GetString(call, "detail") ?? "standard"));
+        }
+
+        var output = JsonSerializer.Serialize(new
+        {
+            ok = unresolved.Count == 0 && inspections.Count >= 2 && inspections.All(value => value.Ok),
+            requested = references,
+            unresolved,
+            inspections
+        }, JsonOptions.Loose);
+        var ok = unresolved.Count == 0 && inspections.Count >= 2 && inspections.All(value => value.Ok);
+        return Task.FromResult(new ToolExecutionResult(call.Tool, ok, output, true, false));
+    }
+
+    private Task<ToolExecutionResult> ListAttachmentInterpreters(ToolCallRequest call) =>
+        Success(call.Tool, AgentAttachmentInspector.ListInterpreters());
+
+    private Task<ToolExecutionResult> ImportAttachment(ToolCallRequest call)
+    {
+        if (!TryResolveAttachment(call, out var attachment, out var error))
+            return Failure(call.Tool, error);
+
+        var result = AgentAttachmentInspector.ImportInto(_doc, attachment);
+        return Task.FromResult(new ToolExecutionResult(
+            call.Tool,
+            result.Ok,
+            JsonSerializer.Serialize(result, JsonOptions.Loose),
+            true,
+            false));
     }
 
     private Task<ToolExecutionResult> ListSkills(ToolCallRequest call) =>
@@ -517,6 +617,45 @@ public sealed class RhinoToolHost
         if (value is JsonElement el && (el.ValueKind == JsonValueKind.True || el.ValueKind == JsonValueKind.False))
             return el.GetBoolean();
         return bool.TryParse(Convert.ToString(value), out var parsed) ? parsed : null;
+    }
+
+    private bool TryResolveAttachment(ToolCallRequest call, out AgentAttachment attachment, out string error)
+    {
+        var reference = GetString(call, "attachment") ?? "";
+        if (_attachmentStore.TryResolve(reference, out attachment))
+        {
+            error = "";
+            return true;
+        }
+
+        error = string.IsNullOrWhiteSpace(reference)
+            ? "Missing attachment placeholder or id."
+            : $"Attachment is unavailable: {reference}";
+        return false;
+    }
+
+    private static IReadOnlyList<string> GetStringList(ToolCallRequest call, string key)
+    {
+        if (!call.Arguments.TryGetValue(key, out var value) || value is null)
+            return [];
+        if (value is JsonElement element && element.ValueKind == JsonValueKind.Array)
+            return element.EnumerateArray()
+                .Select(item => item.ValueKind == JsonValueKind.String ? item.GetString() ?? "" : item.ToString())
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .ToArray();
+        if (value is IEnumerable<object?> values)
+            return values.Select(Convert.ToString).Where(item => !string.IsNullOrWhiteSpace(item)).Cast<string>().ToArray();
+
+        var single = Convert.ToString(value);
+        return string.IsNullOrWhiteSpace(single) ? [] : [single];
+    }
+
+    private string DescribeAttachmentImportApproval(ToolCallRequest call)
+    {
+        var reference = GetString(call, "attachment") ?? "(missing attachment)";
+        return _attachmentStore.TryResolve(reference, out var attachment)
+            ? $"Import attachment into active document: {attachment.Placeholder} {attachment.FileName}{Environment.NewLine}Path: {attachment.LocalPath}"
+            : $"Import attachment into active document: {reference}";
     }
 
     private static void TryDelete(string path)

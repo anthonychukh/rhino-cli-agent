@@ -120,6 +120,7 @@ public static class SlashCommands
         CommandLineUi.Debug(string.Join(Environment.NewLine,
         [
             "RhinoAgent slash commands:",
+            "  Attach files              Ctrl+V/drop any regular file; multiple files become [.ext 1], [.ext 2], ...",
             "  /help                     Show this help",
             "  /status                   Show provider/auth/config status",
             "  /login [claude|codex]     Start provider login in a terminal",

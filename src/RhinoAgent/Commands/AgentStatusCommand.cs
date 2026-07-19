@@ -14,7 +14,7 @@ public sealed class AgentStatusCommand : Command
     protected override Result RunCommand(RhinoDoc doc, RunMode mode)
     {
         var config = AgentConfigStore.Load();
-        var services = AgentServices.Create(config, doc);
+        using var services = AgentServices.Create(config, doc);
         StatusPrinter.Print(config, services);
         return Result.Success;
     }

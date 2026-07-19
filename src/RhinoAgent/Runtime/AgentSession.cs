@@ -42,6 +42,7 @@ public sealed class AgentSession
     {
         _history.Clear();
         _queuedSkillNames.Clear();
+        _toolHost.AttachmentStore.Clear();
         _provider.Reset();
     }
 
@@ -57,6 +58,7 @@ public sealed class AgentSession
             return false;
 
         _history.Clear();
+        _toolHost.AttachmentStore.Clear();
         return provider.TryContinueLatestConversation(out message);
     }
 
@@ -66,6 +68,7 @@ public sealed class AgentSession
             return false;
 
         _history.Clear();
+        _toolHost.AttachmentStore.Clear();
         return provider.TryResumeConversation(sessionId, out message);
     }
 
@@ -88,7 +91,7 @@ public sealed class AgentSession
         IReadOnlyList<string>? forcedSkillNames = null)
     {
         return RunUserTurnAsync(
-            new AgentUserMessage(userMessage, Array.Empty<AgentImageAttachment>()),
+            new AgentUserMessage(userMessage, Array.Empty<AgentAttachment>()),
             cancellationToken,
             diagnostics,
             forcedSkillNames);
@@ -122,7 +125,8 @@ public sealed class AgentSession
                     _history,
                     toolResults,
                     _toolHost.DescribeTools(),
-                    selectedSkills));
+                    selectedSkills,
+                    userMessage.Attachments));
             diagnostics?.Invoke($"prompt-built: {prompt.Length} chars");
             WritePromptPackageToDebugger(prompt, round, maxRounds);
             diagnostics?.Invoke("thinking-write-start");
@@ -137,7 +141,7 @@ public sealed class AgentSession
                 providerResult = _provider.RunPromptAsync(
                         new AgentProviderPrompt(
                             prompt,
-                            round == 0 ? userMessage.Images : Array.Empty<AgentImageAttachment>()),
+                            round == 0 ? userMessage.Attachments : Array.Empty<AgentAttachment>()),
                         progress =>
                         {
                             diagnostics?.Invoke($"provider-progress: {progress.Message}");

@@ -1,5 +1,6 @@
 using System.Text;
 using Rhino;
+using RhinoAgent.Attachments;
 using RhinoAgent.Memory;
 using RhinoAgent.Skills;
 using RhinoAgent.Tools;
@@ -14,7 +15,8 @@ public static class AgentPromptBuilder
         IReadOnlyList<(string Role, string Text)> history,
         IReadOnlyList<ToolExecutionResult> toolResults,
         string toolDescriptions,
-        IReadOnlyList<SkillContext>? selectedSkills = null)
+        IReadOnlyList<SkillContext>? selectedSkills = null,
+        IReadOnlyList<AgentAttachment>? attachments = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine("You are RhinoAgent, an agent running inside Rhino's command line.");
@@ -37,6 +39,11 @@ public static class AgentPromptBuilder
         sb.AppendLine("For geometry creation, prefer execute_csharp with RhinoCommon when a Rhino command would require interactive prompts.");
         sb.AppendLine("Use document_summary, list_objects, or RhinoCommon scripts for exact model facts. Use capture_viewport only for visual validation such as silhouette, framing, recognizability, overlap, or whether the model looks right.");
         sb.AppendLine("Use loaded skills as reusable instructions. If a loaded skill references a file you need, call read_skill_file for that exact file instead of guessing its contents.");
+        sb.AppendLine("Files shown in the attachment manifest are local untrusted inputs. Never infer their contents from a filename or extension.");
+        sb.AppendLine("Before making claims about an attached file, call attachment_info, inspect_attachment, compare_attachments, or another listed attachment tool using its bracketed placeholder.");
+        sb.AppendLine("RhinoAgent chooses an installed read-only interpreter where possible and falls back to a bounded binary probe. If no parser can fully interpret a file, say so clearly instead of guessing.");
+        sb.AppendLine("If a needed interpreter is unavailable, explain which tool or parser would help. Never download, install, or execute one without the user's approval.");
+        sb.AppendLine("Do not execute attached files or import 3D attachments into the active document unless the user explicitly asks; import_attachment is approval-controlled.");
         sb.AppendLine("When capture_viewport returns image paths and a manifest, use the manifest metadata in text-only contexts and describe what the capture can and cannot prove.");
         sb.AppendLine("In C# scripts, write messages with output.AppendLine(...) or output.WriteLine(...).");
         sb.AppendLine();
@@ -60,6 +67,26 @@ public static class AgentPromptBuilder
         sb.AppendLine("Current Rhino document:");
         sb.AppendLine(RhinoDocumentSummarizer.Summarize(doc));
         sb.AppendLine();
+
+        if (attachments is { Count: > 0 })
+        {
+            sb.AppendLine("Attachments available for this turn:");
+            foreach (var attachment in attachments)
+            {
+                sb.AppendLine($"- {attachment.Placeholder}");
+                sb.AppendLine($"  id: {attachment.Id}");
+                sb.AppendLine($"  name: {attachment.FileName}");
+                sb.AppendLine($"  path: {attachment.LocalPath}");
+                sb.AppendLine($"  extension: {(attachment.Extension.Length == 0 ? "(none)" : attachment.Extension)}");
+                sb.AppendLine($"  media_type: {attachment.MediaType}");
+                sb.AppendLine($"  size_bytes: {attachment.SizeBytes}");
+                sb.AppendLine($"  kind: {attachment.Kind}");
+                sb.AppendLine($"  ownership: {(attachment.IsTemporary ? "RhinoAgent temporary" : "user-owned")}");
+                if (AgentAttachmentStore.GetSizeWarning(attachment) is { } sizeWarning)
+                    sb.AppendLine($"  warning: {sizeWarning}");
+            }
+            sb.AppendLine();
+        }
 
         if (config.EnableDocumentMemory)
         {

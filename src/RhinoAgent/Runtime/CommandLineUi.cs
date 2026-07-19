@@ -144,7 +144,10 @@ public static class CommandLineUi
             }
             finally
             {
-                SetPromptMessage($"{UserPrompt}>");
+                // Provider completion can still be followed by tool execution
+                // and memory indexing. Do not advertise a user prompt until the
+                // next real GetString owns the command line.
+                SetPromptMessageImmediately("Agent is working...");
                 _cancellation.Dispose();
             }
         }
@@ -174,6 +177,19 @@ public static class CommandLineUi
                     // Some automated or non-interactive Rhino sessions do not expose a prompt.
                 }
             });
+        }
+
+        private static void SetPromptMessageImmediately(string message)
+        {
+            try
+            {
+                RhinoUiDispatcher.Invoke(() =>
+                    RhinoApp.SetCommandPromptMessage(NormalizeForCommandLine(message)));
+            }
+            catch
+            {
+                // Rhino can reject prompt updates while an automated session closes.
+            }
         }
     }
 

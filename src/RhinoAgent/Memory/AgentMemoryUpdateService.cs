@@ -86,7 +86,7 @@ public sealed class AgentMemoryUpdateService
         }
 
         var providerResult = await provider.RunPromptAsync(
-            new AgentProviderPrompt(prompt, Array.Empty<AgentImageAttachment>()),
+            new AgentProviderPrompt(prompt, Array.Empty<AgentAttachment>()),
             progress =>
             {
                 if (!progress.IsTransient && _config.ShowDebugMessages)
