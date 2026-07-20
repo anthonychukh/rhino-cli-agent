@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using Rhino;
 using RhinoAgent.Memory;
 using RhinoAgent.Providers;
@@ -9,6 +10,16 @@ namespace RhinoAgent.Runtime;
 
 public sealed class AgentSession
 {
+    private const int MaxMissingActionRecoveries = 2;
+    private const string MissingActionContinuationDirective =
+        "Your previous response announced an action but contained no RhinoAgent tool call. Continue from that update now. Emit at least one <rhino-agent> tool block before ending this response, and do not repeat the plan.";
+    private static readonly Regex MissingActionAnnouncementRegex = new(
+        @"(?:^|[\r\n.!?]\s*)(?:(?:i['\u2019]?ll|i\s+will|i['\u2019]?m\s+going\s+to|let\s+me|next[,]?\s+i['\u2019]?ll)\s+(?:go\s+ahead(?:\s+and)?|start|begin|continue|proceed|model|create|build|add|make|set\s+up|inspect|check|capture|import|edit|update|run|generate|draw|construct|lay\s+out|block\s+out)\b|(?:starting|beginning|continuing|proceeding)\b)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex ActionRequestRegex = new(
+        @"(?:^\s*(?:(?:please|now)\s+)*(?:go\s+ahead(?:\s+and)?|start|begin|continue|proceed|model|create|build|add|make|set\s+up|inspect|check|capture|import|edit|update|run|generate|draw|construct|lay\s+out|block\s+out)\b|\b(?:can\s+you|could\s+you|would\s+you|i\s+need\s+you\s+to|i\s+want\s+you\s+to|help\s+me(?:\s+to)?|go\s+ahead(?:\s+and)?)\s+(?:start|begin|continue|proceed|model|create|build|add|make|set\s+up|inspect|check|capture|import|edit|update|run|generate|draw|construct|lay\s+out|block\s+out)\b|\bgo\s+ahead\b)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
     private readonly RhinoDoc _doc;
     private readonly AgentConfig _config;
     private readonly IAgentProvider _provider;
@@ -17,8 +28,13 @@ public sealed class AgentSession
     private readonly SkillStore _skillStore;
     private readonly AgentMemoryUpdateService? _memoryUpdater;
     private readonly AgentConversationIndex _conversationIndex = new();
+    private readonly object _conversationIndexSync = new();
     private readonly List<(string Role, string Text)> _history = [];
     private readonly List<string> _queuedSkillNames = [];
+    private Task _conversationIndexWorker = Task.CompletedTask;
+    private bool _conversationIndexWorkerRunning;
+    private int _conversationIndexRequestedTurnCount;
+    private int _conversationIndexInFlightTurnCount;
 
     public AgentSession(
         RhinoDoc doc,
@@ -82,7 +98,23 @@ public sealed class AgentSession
             : $"  Active provider session: {provider.ActiveSessionId}";
     }
 
-    public int PendingConversationIndexTurnCount => _conversationIndex.PendingTurnCount;
+    public int PendingConversationIndexTurnCount
+    {
+        get
+        {
+            lock (_conversationIndexSync)
+                return _conversationIndex.PendingTurnCount + _conversationIndexInFlightTurnCount;
+        }
+    }
+
+    public bool IsConversationIndexing
+    {
+        get
+        {
+            lock (_conversationIndexSync)
+                return _conversationIndexWorkerRunning;
+        }
+    }
 
     public Task<AgentTurnResult> RunUserTurnAsync(
         string userMessage,
@@ -113,11 +145,14 @@ public sealed class AgentSession
         var visibleTranscript = new StringBuilder();
         var totalToolCalls = 0;
         var totalToolResults = 0;
+        var missingActionRecoveries = 0;
+        string? continuationDirective = null;
         AgentProviderResult? lastProviderResult = null;
 
         var maxRounds = Math.Max(1, _config.MaxToolRounds);
         for (var round = 0; round < maxRounds; round++)
         {
+            var recoveringMissingAction = !string.IsNullOrWhiteSpace(continuationDirective);
             var prompt = await RhinoUiDispatcher.InvokeAsync(
                 () => AgentPromptBuilder.Build(
                     _doc,
@@ -126,14 +161,18 @@ public sealed class AgentSession
                     toolResults,
                     _toolHost.DescribeTools(),
                     selectedSkills,
-                    userMessage.Attachments));
+                    userMessage.Attachments,
+                    continuationDirective));
+            continuationDirective = null;
             diagnostics?.Invoke($"prompt-built: {prompt.Length} chars");
             WritePromptPackageToDebugger(prompt, round, maxRounds);
             diagnostics?.Invoke("thinking-write-start");
             var lastProgressMessage = "";
             AgentProviderResult providerResult;
             using (CommandLineUi.Thinking(
-                round == 0 ? "Agent is thinking" : "Agent is checking tool results",
+                recoveringMissingAction
+                    ? "Agent is continuing"
+                    : round == 0 ? "Agent is thinking" : "Agent is checking tool results",
                 _config.ShowDebugMessages))
             {
                 diagnostics?.Invoke("thinking-write-complete");
@@ -174,7 +213,7 @@ public sealed class AgentSession
                     totalToolResults,
                     false,
                     $"Provider exited with code {providerResult.ExitCode}.");
-                await CompleteTurnAndIndexMemoryAsync(userMessage.Text, result, cancellationToken);
+                CompleteTurnAndScheduleMemory(userMessage.Text, result);
                 return result;
             }
 
@@ -195,6 +234,35 @@ public sealed class AgentSession
 
             if (parsed.ToolCalls.Count == 0)
             {
+                if (ShouldRecoverMissingAction(userMessage.Text, visible))
+                {
+                    if (missingActionRecoveries < MaxMissingActionRecoveries)
+                    {
+                        missingActionRecoveries++;
+                        continuationDirective = MissingActionContinuationDirective;
+                        diagnostics?.Invoke($"missing-action-recovery: {missingActionRecoveries}/{MaxMissingActionRecoveries}");
+                        Debug($"Agent announced an action without issuing a tool; continuing automatically ({missingActionRecoveries}/{MaxMissingActionRecoveries}).");
+                        round--;
+                        continue;
+                    }
+
+                    const string failureMessage =
+                        "The provider repeatedly announced an action without issuing a RhinoAgent tool call, so RhinoAgent could not safely advance the task.";
+                    CommandLineUi.AgentResponse(failureMessage);
+                    visibleTranscript.AppendLine(failureMessage);
+                    diagnostics?.Invoke("turn-failed-missing-action");
+                    var failedResult = BuildResult(
+                        false,
+                        providerResult,
+                        visibleTranscript,
+                        totalToolCalls,
+                        totalToolResults,
+                        false,
+                        failureMessage);
+                    CompleteTurnAndScheduleMemory(userMessage.Text, failedResult);
+                    return failedResult;
+                }
+
                 diagnostics?.Invoke("turn-complete-no-tools");
                 var result = BuildResult(
                     true,
@@ -204,7 +272,7 @@ public sealed class AgentSession
                     totalToolResults,
                     false,
                     null);
-                await CompleteTurnAndIndexMemoryAsync(userMessage.Text, result, cancellationToken);
+                CompleteTurnAndScheduleMemory(userMessage.Text, result);
                 return result;
             }
 
@@ -250,7 +318,7 @@ public sealed class AgentSession
                     totalToolResults,
                     false,
                     null);
-                await CompleteTurnAndIndexMemoryAsync(userMessage.Text, result, cancellationToken);
+                CompleteTurnAndScheduleMemory(userMessage.Text, result);
                 return result;
             }
         }
@@ -264,81 +332,197 @@ public sealed class AgentSession
             totalToolResults,
             true,
             "Agent stopped after the configured tool-round limit.");
-        await CompleteTurnAndIndexMemoryAsync(userMessage.Text, stoppedResult, cancellationToken);
+        CompleteTurnAndScheduleMemory(userMessage.Text, stoppedResult);
         return stoppedResult;
     }
 
-    public async Task<AgentMemoryMaintenanceResult> IndexConversationAsync(
-        CancellationToken cancellationToken = default)
+    public AgentConversationIndexScheduleResult StartConversationIndexing()
     {
         if (_memoryUpdater is null)
-            return new AgentMemoryMaintenanceResult(false, "No memory updater is configured for this session.", "");
+            return new AgentConversationIndexScheduleResult(
+                false,
+                false,
+                0,
+                "No memory updater is configured for this session.");
 
-        if (_conversationIndex.PendingTurnCount == 0)
-            return new AgentMemoryMaintenanceResult(false, "No unindexed conversation turns.", "");
-
-        var anyUpdated = false;
-        var lastMessage = "Conversation index is up to date.";
-        var lastReason = "";
-        while (_conversationIndex.PendingTurnCount > 0)
+        lock (_conversationIndexSync)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var batch = _conversationIndex.GetNextBatch();
-            if (batch.Count == 0)
-                break;
+            var pendingTurnCount = _conversationIndex.PendingTurnCount;
+            var totalTurnCount = pendingTurnCount + _conversationIndexInFlightTurnCount;
+            if (_conversationIndexWorkerRunning)
+            {
+                _conversationIndexRequestedTurnCount = Math.Max(
+                    _conversationIndexRequestedTurnCount,
+                    pendingTurnCount);
+                return new AgentConversationIndexScheduleResult(
+                    false,
+                    true,
+                    totalTurnCount,
+                    pendingTurnCount > 0
+                        ? $"Conversation indexing is already running; {pendingTurnCount} queued turn(s) will follow in the background."
+                        : "Conversation indexing is already running in the background.");
+            }
 
-            var update = await _memoryUpdater.IndexConversationBatchAsync(batch, cancellationToken)
-                .ConfigureAwait(false);
-            lastMessage = update.Message;
-            lastReason = update.Reason;
-            anyUpdated |= update.Updated;
-            if (!update.Completed)
-                return new AgentMemoryMaintenanceResult(anyUpdated, lastMessage, lastReason, false);
+            if (pendingTurnCount == 0)
+                return new AgentConversationIndexScheduleResult(
+                    false,
+                    false,
+                    0,
+                    "No unindexed conversation turns.");
 
-            _conversationIndex.MarkIndexed(batch);
+            _conversationIndexRequestedTurnCount = pendingTurnCount;
+            _conversationIndexWorkerRunning = true;
+            _conversationIndexWorker = Task.Run(ProcessConversationIndexAsync);
+            return new AgentConversationIndexScheduleResult(
+                true,
+                true,
+                pendingTurnCount,
+                $"Started background indexing for {pendingTurnCount} conversation turn(s).");
         }
-
-        return new AgentMemoryMaintenanceResult(anyUpdated, lastMessage, lastReason);
     }
 
-    private async Task CompleteTurnAndIndexMemoryAsync(
+    public Task WaitForConversationIndexingAsync()
+    {
+        lock (_conversationIndexSync)
+            return _conversationIndexWorker;
+    }
+
+    public string DescribeConversationIndexStatus()
+    {
+        lock (_conversationIndexSync)
+        {
+            return string.Join(Environment.NewLine,
+            [
+                "Conversation memory index",
+                $"  Background worker: {(_conversationIndexWorkerRunning ? "running" : "idle")}",
+                $"  In flight: {_conversationIndexInFlightTurnCount}",
+                $"  Queued: {_conversationIndex.PendingTurnCount}",
+                $"  Dropped: {_conversationIndex.DroppedTurnCount}"
+            ]);
+        }
+    }
+
+    private async Task ProcessConversationIndexAsync()
+    {
+        IReadOnlyList<AgentConversationTurn> activeBatch = [];
+        try
+        {
+            while (true)
+            {
+                lock (_conversationIndexSync)
+                {
+                    if (_conversationIndexRequestedTurnCount <= 0
+                        || _conversationIndex.PendingTurnCount == 0)
+                    {
+                        _conversationIndexRequestedTurnCount = 0;
+                        _conversationIndexInFlightTurnCount = 0;
+                        _conversationIndexWorkerRunning = false;
+                        return;
+                    }
+
+                    var requestedBatchSize = Math.Min(
+                        _conversationIndexRequestedTurnCount,
+                        _conversationIndex.PendingTurnCount);
+                    activeBatch = _conversationIndex.GetNextBatch(requestedBatchSize);
+                    _conversationIndex.MarkIndexed(activeBatch);
+                    _conversationIndexRequestedTurnCount -= activeBatch.Count;
+                    _conversationIndexInFlightTurnCount = activeBatch.Count;
+                }
+
+                using var timeoutCancellation = _config.ProviderTurnTimeoutSeconds > 0
+                    ? new CancellationTokenSource(TimeSpan.FromSeconds(_config.ProviderTurnTimeoutSeconds))
+                    : new CancellationTokenSource();
+                var update = await _memoryUpdater!
+                    .IndexConversationBatchAsync(activeBatch, timeoutCancellation.Token)
+                    .ConfigureAwait(false);
+                if (!update.Completed)
+                {
+                    RestoreActiveBatchAndStop(activeBatch);
+                    ReportConversationIndexDeferred(update.Message);
+                    return;
+                }
+
+                lock (_conversationIndexSync)
+                    _conversationIndexInFlightTurnCount = 0;
+                activeBatch = [];
+                ReportConversationIndexResult(update);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            RestoreActiveBatchAndStop(activeBatch);
+            ReportConversationIndexDeferred("The background memory update timed out or was canceled.");
+        }
+        catch (Exception ex)
+        {
+            RestoreActiveBatchAndStop(activeBatch);
+            ReportConversationIndexDeferred(ex.Message);
+        }
+    }
+
+    private void CompleteTurnAndScheduleMemory(
         string userMessage,
-        AgentTurnResult result,
-        CancellationToken cancellationToken)
+        AgentTurnResult result)
     {
         if (_memoryUpdater is null || !_config.EnableDocumentMemory || !result.Success)
             return;
 
-        var droppedBeforeAdd = _conversationIndex.DroppedTurnCount;
-        if (!_conversationIndex.TryAdd(userMessage, result, out _))
-            return;
-        if (_conversationIndex.DroppedTurnCount > droppedBeforeAdd)
+        int pendingTurnCount;
+        bool droppedTurn;
+        bool shouldStart;
+        lock (_conversationIndexSync)
+        {
+            var droppedBeforeAdd = _conversationIndex.DroppedTurnCount;
+            if (!_conversationIndex.TryAdd(userMessage, result, out _))
+                return;
+
+            droppedTurn = _conversationIndex.DroppedTurnCount > droppedBeforeAdd;
+            pendingTurnCount = _conversationIndex.PendingTurnCount;
+            shouldStart = _conversationIndex.ShouldFlushAutomatically
+                || ShouldIndexImmediately(userMessage, result);
+        }
+
+        if (droppedTurn)
             Debug("Dropped the oldest unindexed conversation turn because the bounded memory queue was full.");
 
-        if (!_conversationIndex.ShouldFlushAutomatically && !ShouldIndexImmediately(userMessage, result))
+        if (!shouldStart)
         {
-            Debug($"Queued conversation turn for memory indexing ({_conversationIndex.PendingTurnCount}/{AgentConversationIndex.AutomaticFlushTurnCount}).");
+            Debug($"Queued conversation turn for memory indexing ({pendingTurnCount}/{AgentConversationIndex.AutomaticFlushTurnCount}).");
             return;
         }
 
-        try
+        var schedule = StartConversationIndexing();
+        if (schedule.Started)
+            Debug(schedule.Message);
+    }
+
+    private void RestoreActiveBatchAndStop(IReadOnlyList<AgentConversationTurn> activeBatch)
+    {
+        lock (_conversationIndexSync)
         {
-            var update = await IndexConversationAsync(cancellationToken).ConfigureAwait(false);
+            if (activeBatch.Count > 0)
+                _conversationIndex.RestoreBatch(activeBatch);
+            _conversationIndexInFlightTurnCount = 0;
+            _conversationIndexRequestedTurnCount = 0;
+            _conversationIndexWorkerRunning = false;
+        }
+    }
+
+    private void ReportConversationIndexResult(AgentMemoryMaintenanceResult update)
+    {
+        RhinoUiDispatcher.Post(() =>
+        {
             if (update.Updated)
-                CommandLineUi.Debug($"Conversation indexed into memory: {update.Reason}. Use /memory undo to revert.");
-            else if (!update.Completed)
-                CommandLineUi.Debug($"Conversation indexing deferred: {update.Message}");
+                CommandLineUi.Debug($"Background conversation indexing updated memory: {update.Reason}. Use /memory undo to revert.");
             else if (_config.ShowDebugMessages && !string.IsNullOrWhiteSpace(update.Message))
-                CommandLineUi.Debug($"Conversation indexed; memory unchanged: {update.Message}");
-        }
-        catch (OperationCanceledException)
-        {
-            CommandLineUi.Debug("Conversation indexing deferred: canceled.");
-        }
-        catch (Exception ex)
-        {
-            CommandLineUi.Debug($"Conversation indexing deferred: {ex.Message}");
-        }
+                CommandLineUi.Debug($"Background conversation indexing completed; memory unchanged: {update.Message}");
+        });
+    }
+
+    private static void ReportConversationIndexDeferred(string message)
+    {
+        RhinoUiDispatcher.Post(() =>
+            CommandLineUi.Debug($"Background conversation indexing deferred: {message}"));
     }
 
     private static bool ShouldIndexImmediately(string userMessage, AgentTurnResult result)
@@ -354,6 +538,12 @@ public sealed class AgentSession
         ];
         return durableWords.Any(text.Contains);
     }
+
+    internal static bool ShouldRecoverMissingAction(string userText, string visibleText) =>
+        !string.IsNullOrWhiteSpace(userText)
+        && !string.IsNullOrWhiteSpace(visibleText)
+        && ActionRequestRegex.IsMatch(userText)
+        && MissingActionAnnouncementRegex.IsMatch(visibleText);
 
     private void PrintUsage(AgentProviderResult result)
     {

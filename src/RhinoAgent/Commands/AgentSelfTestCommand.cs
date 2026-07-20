@@ -56,6 +56,9 @@ public sealed class AgentSelfTestCommand : Command
         var scriptedToolRecovery = RunScriptedToolRecovery(doc);
         success = success && scriptedToolRecovery.Ok;
 
+        var announcedActionContinuation = RunAnnouncedActionContinuation(doc);
+        success = success && announcedActionContinuation.Ok;
+
         var viewportCaptureAwareness = RunViewportCaptureAwareness(doc);
         success = success && viewportCaptureAwareness.Ok;
 
@@ -103,6 +106,7 @@ public sealed class AgentSelfTestCommand : Command
                 aliasRecognized
             },
             scriptedToolRecovery,
+            announcedActionContinuation,
             viewportCaptureAwareness,
             attachments,
             skillSystem,
@@ -586,6 +590,81 @@ public sealed class AgentSelfTestCommand : Command
             FirstNonEmpty(exception?.Message, turnResult?.Error));
     }
 
+    private static AnnouncedActionContinuationResult RunAnnouncedActionContinuation(RhinoDoc doc)
+    {
+        var marker = Guid.NewGuid().ToString("N");
+        var beforeIds = doc.Objects
+            .Where(obj => !obj.IsDeleted)
+            .Select(obj => obj.Id)
+            .ToHashSet();
+        var provider = new ScriptedAnnouncedActionProvider(marker);
+        AgentTurnResult? turnResult = null;
+        Exception? exception = null;
+        ScriptedBoxProbe boxProbe;
+
+        try
+        {
+            var config = new AgentConfig
+            {
+                PermissionMode = AgentPermissionMode.FullAccess,
+                ProviderProcessMode = AgentProviderProcessMode.Stateless,
+                EnableDocumentMemory = false,
+                MaxToolRounds = 1
+            };
+            var toolHost = new RhinoToolHost(doc, config);
+            var approvals = new ApprovalService(config);
+            var session = new AgentSession(doc, config, provider, toolHost, approvals);
+            turnResult = session.RunUserTurnAsync(
+                    "Model the entire Art Deco building, starting with the main massing.")
+                .GetAwaiter()
+                .GetResult();
+            boxProbe = ProbeSelfTestBox(doc, marker);
+        }
+        catch (Exception ex)
+        {
+            exception = ex;
+            boxProbe = ProbeSelfTestBox(doc, marker);
+        }
+        finally
+        {
+            DeleteObjectsCreatedBySelfTest(doc, beforeIds, marker);
+        }
+
+        var continuationPromptSeen = provider.Prompts.Any(prompt =>
+            prompt.Contains("Continuation required for this provider round:", StringComparison.Ordinal)
+            && prompt.Contains("announced an action but contained no RhinoAgent tool call", StringComparison.Ordinal));
+        var ok = exception is null
+            && AgentSession.ShouldRecoverMissingAction(
+                "Model the entire Art Deco building.",
+                "I'll start modeling the Art Deco building with its main stepped massing.")
+            && !AgentSession.ShouldRecoverMissingAction(
+                "How would you model an Art Deco building?",
+                "I'll start with the main massing, then describe the setbacks.")
+            && !AgentSession.ShouldRecoverMissingAction(
+                "Model the entire Art Deco building.",
+                "The Art Deco building uses stepped massing and vertical setbacks.")
+            && provider.Prompts.Count == 2
+            && continuationPromptSeen
+            && turnResult?.Success == true
+            && turnResult.ToolCallCount == 1
+            && turnResult.ToolResultCount == 1
+            && !turnResult.StoppedAfterToolLimit
+            && boxProbe.Ok;
+
+        return new AnnouncedActionContinuationResult(
+            ok,
+            marker,
+            provider.Prompts.Count,
+            continuationPromptSeen,
+            turnResult?.Success ?? false,
+            turnResult?.ToolCallCount ?? 0,
+            turnResult?.ToolResultCount ?? 0,
+            turnResult?.StoppedAfterToolLimit ?? false,
+            boxProbe,
+            turnResult?.VisibleText ?? "",
+            FirstNonEmpty(exception?.Message, turnResult?.Error));
+    }
+
     private static ViewportCaptureAwarenessResult RunViewportCaptureAwareness(RhinoDoc doc)
     {
         var marker = Guid.NewGuid().ToString("N");
@@ -889,7 +968,7 @@ public sealed class AgentSelfTestCommand : Command
                 "test tools");
             var promptGuardrailOk = promptPackage.Contains("canonical project memory is embedded in the active Rhino .3dm document", StringComparison.Ordinal)
                 && promptPackage.Contains("do not create or edit AGENTS.md, MEMORY.md, or any sidecar markdown file with write_file", StringComparison.Ordinal)
-                && promptPackage.Contains("incrementally indexes completed session turns", StringComparison.Ordinal);
+                && promptPackage.Contains("separate non-blocking background worker", StringComparison.Ordinal);
 
             var largeMarkdown = customMarkdown + System.Environment.NewLine + new string('x', AgentMemoryMarkdown.PromptMemoryCharacterLimit + 200);
             AgentMemoryStore.SaveUserMarkdown(doc, largeMarkdown, "Self-test large memory.");
@@ -968,7 +1047,9 @@ public sealed class AgentSelfTestCommand : Command
                 && afterIndex.Markdown.Contains("Scripted indexed conversation note.", StringComparison.Ordinal)
                 && afterIndex.Markdown.Contains("Preserve this user-authored intent.", StringComparison.Ordinal);
 
-            var beforeNoUpdateHash = afterIndex.CurrentHash;
+            var backgroundIndexOk = RunBackgroundConversationIndexing(doc);
+            var afterBackgroundIndex = AgentMemoryStore.Load(doc);
+            var beforeNoUpdateHash = afterBackgroundIndex.CurrentHash;
             var noUpdate = new AgentMemoryUpdateService(
                     doc,
                     new AgentConfig { EnableDocumentMemory = true, ShowDebugMessages = false },
@@ -999,6 +1080,7 @@ public sealed class AgentSelfTestCommand : Command
                 && promptLargeOk
                 && maintenanceOk
                 && conversationIndexOk
+                && backgroundIndexOk
                 && noUpdateOk
                 && disabledOk;
 
@@ -1019,6 +1101,7 @@ public sealed class AgentSelfTestCommand : Command
                 promptLargeOk,
                 maintenanceOk,
                 conversationIndexOk,
+                backgroundIndexOk,
                 noUpdateOk,
                 disabledOk,
                 exportedPath,
@@ -1045,6 +1128,7 @@ public sealed class AgentSelfTestCommand : Command
                 false,
                 false,
                 false,
+                false,
                 exportPath,
                 ex.Message);
         }
@@ -1053,6 +1137,125 @@ public sealed class AgentSelfTestCommand : Command
             AgentMemoryStore.Restore(doc, before);
             TryDeleteDirectory(tempDir);
         }
+    }
+
+    private static bool RunBackgroundConversationIndexing(RhinoDoc doc)
+    {
+        var config = new AgentConfig
+        {
+            EnableDocumentMemory = true,
+            ShowDebugMessages = false,
+            ShowUsageMessages = false,
+            ProviderTurnTimeoutSeconds = 8
+        };
+        using var foregroundProvider = new ScriptedConversationProvider();
+        var backgroundProvider = new BlockingMemoryProvider();
+        var memoryUpdater = new AgentMemoryUpdateService(doc, config, () => backgroundProvider);
+        var session = new AgentSession(
+            doc,
+            config,
+            foregroundProvider,
+            new RhinoToolHost(doc, config),
+            new ApprovalService(config),
+            memoryUpdater: memoryUpdater);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var turnResult = RhinoTaskPump.Run(
+            cancellationToken => session.RunUserTurnAsync(
+                "Remember that background conversation indexing must not block the next prompt.",
+                cancellationToken),
+            timeout.Token);
+        stopwatch.Stop();
+
+        var returnedBeforeRelease = turnResult.Success
+            && !backgroundProvider.IsReleased
+            && stopwatch.Elapsed < TimeSpan.FromSeconds(2);
+        var providerStarted = RhinoTaskPump.Run(
+            async cancellationToken =>
+            {
+                await backgroundProvider.Started.WaitAsync(cancellationToken).ConfigureAwait(false);
+                return true;
+            },
+            timeout.Token);
+        var workerWasRunning = session.IsConversationIndexing;
+
+        backgroundProvider.Release();
+        var workerCompleted = RhinoTaskPump.Run(
+            async cancellationToken =>
+            {
+                await session.WaitForConversationIndexingAsync()
+                    .WaitAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                return true;
+            },
+            timeout.Token);
+        var after = AgentMemoryStore.Load(doc);
+
+        var backgroundCompletedOk = returnedBeforeRelease
+            && providerStarted
+            && workerWasRunning
+            && workerCompleted
+            && !session.IsConversationIndexing
+            && session.PendingConversationIndexTurnCount == 0
+            && after.Markdown.Contains("Background conversation indexing completed.", StringComparison.Ordinal)
+            && after.Markdown.Contains("Preserve this user-authored intent.", StringComparison.Ordinal);
+        if (!backgroundCompletedOk)
+            return false;
+
+        using var conflictForegroundProvider = new ScriptedConversationProvider();
+        var conflictProvider = new BlockingMemoryProvider(
+            "- Stale background note that must not be applied.",
+            "Stale background summary that must not be applied.");
+        var conflictSession = new AgentSession(
+            doc,
+            config,
+            conflictForegroundProvider,
+            new RhinoToolHost(doc, config),
+            new ApprovalService(config),
+            memoryUpdater: new AgentMemoryUpdateService(doc, config, () => conflictProvider));
+        using var conflictTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        var conflictTurn = RhinoTaskPump.Run(
+            cancellationToken => conflictSession.RunUserTurnAsync(
+                "Remember this conflict-detection self-test decision.",
+                cancellationToken),
+            conflictTimeout.Token);
+        var conflictProviderStarted = RhinoTaskPump.Run(
+            async cancellationToken =>
+            {
+                await conflictProvider.Started.WaitAsync(cancellationToken).ConfigureAwait(false);
+                return true;
+            },
+            conflictTimeout.Token);
+
+        var concurrentMarkdown = AgentMemoryStore.Load(doc).Markdown.Replace(
+            "Preserve this user-authored intent.",
+            "Preserve this user-authored intent. Concurrent edit marker.",
+            StringComparison.Ordinal);
+        var concurrentEdit = AgentMemoryStore.SaveUserMarkdown(
+            doc,
+            concurrentMarkdown,
+            "Background index conflict self-test edit.");
+        conflictProvider.Release();
+        var conflictWorkerCompleted = RhinoTaskPump.Run(
+            async cancellationToken =>
+            {
+                await conflictSession.WaitForConversationIndexingAsync()
+                    .WaitAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                return true;
+            },
+            conflictTimeout.Token);
+        var afterConflict = AgentMemoryStore.Load(doc);
+
+        return conflictTurn.Success
+            && conflictProviderStarted
+            && concurrentEdit.Changed
+            && conflictWorkerCompleted
+            && !conflictSession.IsConversationIndexing
+            && conflictSession.PendingConversationIndexTurnCount == 1
+            && afterConflict.Markdown.Contains("Concurrent edit marker.", StringComparison.Ordinal)
+            && !afterConflict.Markdown.Contains("Stale background note", StringComparison.Ordinal);
     }
 
     private static void DeleteObjectsCreatedBySelfTest(RhinoDoc doc, HashSet<Guid> beforeIds, string marker)
@@ -1169,6 +1372,19 @@ public sealed class AgentSelfTestCommand : Command
         double MaxDeviation,
         double Tolerance);
 
+    private sealed record AnnouncedActionContinuationResult(
+        bool Ok,
+        string Marker,
+        int ProviderPromptCount,
+        bool ContinuationPromptSeen,
+        bool TurnSuccess,
+        int ToolCallCount,
+        int ToolResultCount,
+        bool StoppedAfterToolLimit,
+        ScriptedBoxProbe Box,
+        string VisibleText,
+        string? Error);
+
     private sealed record ViewportCaptureAwarenessResult(
         bool Ok,
         string Marker,
@@ -1253,10 +1469,90 @@ public sealed class AgentSelfTestCommand : Command
         bool PromptLargeOk,
         bool MaintenanceOk,
         bool ConversationIndexOk,
+        bool BackgroundIndexOk,
         bool NoUpdateOk,
         bool DisabledOk,
         string ExportPath,
         string? Error);
+
+    private sealed class ScriptedAnnouncedActionProvider : IAgentProvider
+    {
+        private readonly string _marker;
+        private int _turn;
+
+        public ScriptedAnnouncedActionProvider(string marker)
+        {
+            _marker = marker;
+        }
+
+        public AgentProviderKind Kind => AgentProviderKind.Codex;
+        public string DisplayName => "Scripted announced-action self-test provider";
+        public AgentProviderProcessMode ProcessMode => AgentProviderProcessMode.Stateless;
+        public List<string> Prompts { get; } = [];
+
+        public Task<AgentProviderResult> RunPromptAsync(
+            AgentProviderPrompt prompt,
+            Action<AgentProgress> progress,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Prompts.Add(prompt.Text);
+            _turn++;
+            progress(new AgentProgress($"scripted announced-action self-test turn {_turn}"));
+
+            var text = _turn == 1
+                ? "I'll start modeling the Art Deco building with its main stepped massing."
+                : BuildActionResponse();
+            return Task.FromResult(new AgentProviderResult(
+                text,
+                "self-test",
+                "scripted-announced-action",
+                null,
+                0,
+                ""));
+        }
+
+        public void Reset()
+        {
+            _turn = 0;
+            Prompts.Clear();
+        }
+
+        public void Dispose()
+        {
+        }
+
+        private string BuildActionResponse()
+        {
+            var code = $$"""
+                var attrs = new ObjectAttributes { Name = "RhinoAgent Announced Action Self-Test Box" };
+                attrs.SetUserString("{{SelfTestMarkerKey}}", "{{_marker}}");
+                var brep = new Box(
+                    Plane.WorldXY,
+                    new Interval(0, 10),
+                    new Interval(0, 10),
+                    new Interval(0, 10)).ToBrep();
+                var id = doc.Objects.AddBrep(brep, attrs);
+                doc.Views.Redraw();
+                output.AppendLine($"Created announced-action recovery box: {id}");
+                """;
+            var envelope = new ToolCallEnvelope
+            {
+                ToolCalls =
+                [
+                    new ToolCallRequest
+                    {
+                        Tool = "execute_csharp",
+                        Arguments = new Dictionary<string, object?> { ["code"] = code }
+                    }
+                ]
+            };
+            return $$"""
+                Continuing now with the building's main massing.
+                <rhino-agent>{{JsonSerializer.Serialize(envelope, JsonOptions.Loose)}}</rhino-agent>
+                """;
+        }
+    }
 
     private sealed class ScriptedAttachmentProvider : IAgentProvider
     {
@@ -1575,6 +1871,85 @@ public sealed class AgentSelfTestCommand : Command
                 {visibleText}
                 <rhino-agent>{JsonSerializer.Serialize(envelope, JsonOptions.Loose)}</rhino-agent>
                 """;
+        }
+    }
+
+    private sealed class ScriptedConversationProvider : IAgentProvider
+    {
+        public AgentProviderKind Kind => AgentProviderKind.Codex;
+        public string DisplayName => "Scripted conversation self-test provider";
+        public AgentProviderProcessMode ProcessMode => AgentProviderProcessMode.Stateless;
+
+        public Task<AgentProviderResult> RunPromptAsync(
+            AgentProviderPrompt prompt,
+            Action<AgentProgress> progress,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new AgentProviderResult(
+                "The background-indexing decision is recorded.",
+                "self-test",
+                "scripted-conversation",
+                null,
+                0,
+                ""));
+        }
+
+        public void Reset()
+        {
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class BlockingMemoryProvider : IAgentProvider
+    {
+        private readonly TaskCompletionSource<bool> _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly string _agentNotes;
+        private readonly string _summary;
+
+        public BlockingMemoryProvider(
+            string agentNotes = "- Background conversation indexing completed.",
+            string summary = "Background conversation indexing self-test completed.")
+        {
+            _agentNotes = agentNotes;
+            _summary = summary;
+        }
+
+        public AgentProviderKind Kind => AgentProviderKind.Codex;
+        public string DisplayName => "Blocking background-memory self-test provider";
+        public AgentProviderProcessMode ProcessMode => AgentProviderProcessMode.Stateless;
+        public Task Started => _started.Task;
+        public bool IsReleased => _release.Task.IsCompleted;
+
+        public async Task<AgentProviderResult> RunPromptAsync(
+            AgentProviderPrompt prompt,
+            Action<AgentProgress> progress,
+            CancellationToken cancellationToken)
+        {
+            _started.TrySetResult(true);
+            await _release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var text = JsonSerializer.Serialize(new
+            {
+                update = true,
+                agentNotes = _agentNotes,
+                summary = _summary,
+                reason = "Verified non-blocking background conversation indexing."
+            });
+            return new AgentProviderResult(text, "self-test", "background-memory", null, 0, "");
+        }
+
+        public void Release() => _release.TrySetResult(true);
+
+        public void Reset()
+        {
+        }
+
+        public void Dispose()
+        {
         }
     }
 

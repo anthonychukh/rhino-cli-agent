@@ -69,16 +69,17 @@ public sealed class AgentConversationIndex
         return true;
     }
 
-    public IReadOnlyList<AgentConversationTurn> GetNextBatch()
+    public IReadOnlyList<AgentConversationTurn> GetNextBatch(int maximumTurnCount = MaximumBatchTurnCount)
     {
         if (_pending.Count == 0)
             return [];
 
+        maximumTurnCount = Math.Clamp(maximumTurnCount, 1, MaximumBatchTurnCount);
         var batch = new List<AgentConversationTurn>();
         var characterCount = 0;
         foreach (var turn in _pending)
         {
-            if (batch.Count >= MaximumBatchTurnCount)
+            if (batch.Count >= maximumTurnCount)
                 break;
 
             var nextCharacterCount = characterCount + turn.CharacterCount;
@@ -110,6 +111,26 @@ public sealed class AgentConversationIndex
         for (var i = 0; i < count; i++)
             _pendingCharacterCount -= _pending[i].CharacterCount;
         _pending.RemoveRange(0, count);
+    }
+
+    public void RestoreBatch(IReadOnlyList<AgentConversationTurn> batch)
+    {
+        if (batch.Count == 0)
+            return;
+
+        _pending.InsertRange(0, batch);
+        _pendingCharacterCount += batch.Sum(turn => turn.CharacterCount);
+
+        // Keep the failed, older batch available for retry. If the bounded
+        // queue overflowed while it was in flight, discard newest turns first.
+        while (_pending.Count > MaximumPendingTurnCount
+            || PendingCharacterCount > MaximumPendingCharacterCount)
+        {
+            var last = _pending[^1];
+            _pendingCharacterCount -= last.CharacterCount;
+            _pending.RemoveAt(_pending.Count - 1);
+            DroppedTurnCount++;
+        }
     }
 
     private void TrimPendingQueue()

@@ -19,7 +19,9 @@ public static class AgentMemorySlashCommands
         switch (command)
         {
             case "status":
-                CommandLineUi.Debug(AgentMemoryStore.DescribeStatus(doc));
+                CommandLineUi.Debug(session is null
+                    ? AgentMemoryStore.DescribeStatus(doc)
+                    : $"{AgentMemoryStore.DescribeStatus(doc)}{Environment.NewLine}{session.DescribeConversationIndexStatus()}");
                 return;
             case "open":
                 AgentMemoryStore.EnsureCreated(doc);
@@ -38,7 +40,7 @@ public static class AgentMemorySlashCommands
                 Refresh(config, services);
                 return;
             case "index":
-                IndexConversation(config, session);
+                IndexConversation(session);
                 return;
             case "undo":
                 Undo(rest, services);
@@ -97,7 +99,7 @@ public static class AgentMemorySlashCommands
         }
     }
 
-    private static void IndexConversation(AgentConfig config, AgentSession? session)
+    private static void IndexConversation(AgentSession? session)
     {
         if (session is null)
         {
@@ -105,30 +107,7 @@ public static class AgentMemorySlashCommands
             return;
         }
 
-        var timeoutSeconds = Math.Max(30, config.ProviderTurnTimeoutSeconds);
-        using var timeoutCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
-        try
-        {
-            var result = RhinoTaskPump.Run(
-                session.IndexConversationAsync,
-                timeoutCancellation.Token);
-            if (result.Updated)
-                CommandLineUi.Debug($"Conversation indexed into memory: {result.Reason}. Use /memory undo to revert.");
-            else if (!result.Completed)
-                CommandLineUi.Debug($"Conversation indexing remains pending: {result.Message}");
-            else
-                CommandLineUi.Debug($"Conversation index unchanged: {result.Message}");
-        }
-        catch (OperationCanceledException)
-        {
-            CommandLineUi.Debug(timeoutCancellation.IsCancellationRequested
-                ? $"Conversation indexing timed out after {timeoutSeconds} seconds."
-                : "Conversation indexing was canceled.");
-        }
-        catch (Exception ex)
-        {
-            CommandLineUi.Debug($"Conversation indexing failed: {ex.Message}");
-        }
+        CommandLineUi.Debug(session.StartConversationIndexing().Message);
     }
 
     private static void Undo(string arg, AgentServices services)

@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Rhino;
 using RhinoAgent.Providers;
@@ -8,6 +9,8 @@ namespace RhinoAgent.Memory;
 
 public sealed class AgentMemoryUpdateService
 {
+    private static readonly ConditionalWeakTable<RhinoDoc, SemaphoreSlim> DocumentMaintenanceGates = new();
+
     private readonly RhinoDoc _doc;
     private readonly AgentConfig _config;
     private readonly Func<IAgentProvider?> _resolveProvider;
@@ -35,13 +38,19 @@ public sealed class AgentMemoryUpdateService
         if (batch.Length == 0)
             return new AgentMemoryMaintenanceResult(false, "No unindexed conversation turns.", "");
 
-        var prompt = await RhinoUiDispatcher.InvokeAsync(
-            () => BuildConversationIndexPrompt(batch)).ConfigureAwait(false);
-        return await RunMaintenanceAsync(
-            $"indexed {batch.Length} conversation turn(s)",
-            prompt,
-            cancellationToken,
-            requireProvider: true).ConfigureAwait(false);
+        return await RunSerializedAsync(
+            async () =>
+            {
+                var prompt = await RhinoUiDispatcher.InvokeAsync(
+                    () => BuildConversationIndexPrompt(batch)).ConfigureAwait(false);
+                return await RunMaintenanceAsync(
+                    $"indexed {batch.Length} conversation turn(s)",
+                    prompt.Text,
+                    prompt.BaseMemoryHash,
+                    cancellationToken,
+                    requireProvider: true).ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<AgentMemoryMaintenanceResult> RefreshAsync(CancellationToken cancellationToken = default)
@@ -49,16 +58,39 @@ public sealed class AgentMemoryUpdateService
         if (!_config.EnableDocumentMemory)
             return new AgentMemoryMaintenanceResult(false, "Document memory is disabled in config.", "");
 
-        var prompt = await RhinoUiDispatcher.InvokeAsync(BuildRefreshPrompt).ConfigureAwait(false);
-        return await RunMaintenanceAsync(
-            "manual /memory refresh",
-            prompt,
+        return await RunSerializedAsync(
+            async () =>
+            {
+                var prompt = await RhinoUiDispatcher.InvokeAsync(BuildRefreshPrompt).ConfigureAwait(false);
+                return await RunMaintenanceAsync(
+                    "manual /memory refresh",
+                    prompt.Text,
+                    prompt.BaseMemoryHash,
+                    cancellationToken).ConfigureAwait(false);
+            },
             cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<AgentMemoryMaintenanceResult> RunSerializedAsync(
+        Func<Task<AgentMemoryMaintenanceResult>> operation,
+        CancellationToken cancellationToken)
+    {
+        var gate = DocumentMaintenanceGates.GetValue(_doc, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            return await operation().ConfigureAwait(false);
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     private async Task<AgentMemoryMaintenanceResult> RunMaintenanceAsync(
         string reason,
         string prompt,
+        string baseMemoryHash,
         CancellationToken cancellationToken,
         bool requireProvider = false)
     {
@@ -90,7 +122,7 @@ public sealed class AgentMemoryUpdateService
             progress =>
             {
                 if (!progress.IsTransient && _config.ShowDebugMessages)
-                    CommandLineUi.Debug(progress.Message);
+                    RhinoUiDispatcher.Post(() => CommandLineUi.Debug(progress.Message));
             },
             cancellationToken).ConfigureAwait(false);
 
@@ -102,6 +134,17 @@ public sealed class AgentMemoryUpdateService
 
         if (!response.Update)
             return new AgentMemoryMaintenanceResult(false, FirstNonEmpty(response.Reason, "No durable memory changes."), response.Reason);
+
+        var currentState = await RhinoUiDispatcher.InvokeAsync(
+            () => AgentMemoryStore.Load(_doc)).ConfigureAwait(false);
+        if (!string.Equals(currentState.CurrentHash, baseMemoryHash, StringComparison.Ordinal))
+        {
+            return new AgentMemoryMaintenanceResult(
+                false,
+                "Document memory changed while maintenance was running; the stale result was not applied.",
+                "",
+                false);
+        }
 
         var saveResult = await RhinoUiDispatcher.InvokeAsync(
             () => AgentMemoryStore.ApplyGeneratedUpdate(
@@ -136,7 +179,7 @@ public sealed class AgentMemoryUpdateService
         }
     }
 
-    private string BuildConversationIndexPrompt(IReadOnlyList<AgentConversationTurn> turns)
+    private MemoryMaintenancePrompt BuildConversationIndexPrompt(IReadOnlyList<AgentConversationTurn> turns)
     {
         var state = AgentMemoryStore.EnsureCreated(_doc);
         var conversationJson = JsonSerializer.Serialize(
@@ -150,7 +193,7 @@ public sealed class AgentMemoryUpdateService
             }),
             JsonOptions.Loose);
 
-        return $$"""
+        var text = $$"""
         You are RhinoAgent's private per-file memory indexer.
         Extract durable project context from this incremental conversation batch and merge it into the active Rhino document memory. Do not call tools. Do not include markdown fences.
 
@@ -172,12 +215,13 @@ public sealed class AgentMemoryUpdateService
         Conversation index batch:
         {{conversationJson}}
         """;
+        return new MemoryMaintenancePrompt(text, state.CurrentHash);
     }
 
-    private string BuildRefreshPrompt()
+    private MemoryMaintenancePrompt BuildRefreshPrompt()
     {
         var state = AgentMemoryStore.EnsureCreated(_doc);
-        return $$"""
+        var text = $$"""
         You are RhinoAgent's private per-file memory updater.
         Refresh the generated Agent Notes and compact summary for this Rhino document. Do not call tools. Do not include markdown fences.
 
@@ -191,6 +235,7 @@ public sealed class AgentMemoryUpdateService
         Current embedded memory:
         {{state.Markdown.Trim()}}
         """;
+        return new MemoryMaintenancePrompt(text, state.CurrentHash);
     }
 
     private static string ExtractJsonObject(string text)
@@ -211,6 +256,8 @@ public sealed class AgentMemoryUpdateService
 
     private static string FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? "";
+
+    private sealed record MemoryMaintenancePrompt(string Text, string BaseMemoryHash);
 }
 
 public sealed class AgentMemoryMaintenanceResponse

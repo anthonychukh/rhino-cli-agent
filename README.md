@@ -10,6 +10,8 @@ PNG, JPEG, GIF, and WebP files up to 20 MB continue through each provider's nati
 
 After you submit a prompt, the command line remains in Agent mode and shows the animated thinking state until the turn finishes. Provider work runs on a worker task while Rhino continues pumping its UI, so you can orbit the viewport and inspect panels without allowing a conflicting Rhino command to start. When the response is complete, the Agent prompt returns for the next message.
 
+Progress-style responses remain visible during multi-step work. If a provider says it will start or continue an action but accidentally omits the required RhinoAgent tool block, RhinoAgent keeps ownership of the turn and asks the provider to continue automatically. This recovery is bounded so a repeatedly non-actionable provider response fails clearly instead of looping forever or silently returning to `You>`.
+
 While `Agent` is running, you can still model manually: type native command forms such as `_Line`, `-Layer`, `.Undo`, `! _Circle`, known command names such as `Line`, or your Rhino aliases. Use `/ask <prompt>` when a normal language prompt intentionally starts with a Rhino command name.
 
 ## Status
@@ -142,7 +144,9 @@ Exact token and cost usage are only displayed when the provider CLI emits exact 
 
 Completed turns are added to a bounded in-session index using only the user's message, the visible assistant response, and compact tool-count metadata. Hidden provider prompts, hidden tool blocks, and raw tool output are excluded. Identical turns are deduplicated, individual messages are length-bounded, and casual turns are batched so memory maintenance does not require an extra provider call after every message.
 
-The index flushes automatically after four pending turns, after a successful tool action, when a turn explicitly concerns durable memory, and when the `Agent` session exits. `/memory index` flushes it immediately. The private maintenance pass merges durable goals, decisions, constraints, conventions, tasks, and completed work into the generated Agent Notes section of the active `.3dm`; it does not append a raw conversation transcript or overwrite user-authored memory sections.
+After four pending turns, a successful tool action, an explicit durable-memory request, `/memory index`, or session exit, RhinoAgent schedules a separate background worker and returns to the command prompt without waiting for the maintenance provider. Rhino document reads and writes are marshaled onto Rhino's UI thread, while maintenance for the same document is serialized to prevent competing sessions from overwriting each other. `/memory status` reports queued and in-flight turns.
+
+The private maintenance pass merges durable goals, decisions, constraints, conventions, tasks, and completed work into the generated Agent Notes section of the active `.3dm`; it does not append a raw conversation transcript or overwrite user-authored memory sections. Failed or timed-out batches are restored to the bounded queue so `/memory index` can retry them.
 
 ## Provider Process Modes
 

@@ -96,7 +96,7 @@ public sealed class AgentCommand : Command
             }
             finally
             {
-                FlushConversationIndex(session, config);
+                StartConversationIndexInBackground(session, config);
             }
         }
     }
@@ -220,35 +220,14 @@ public sealed class AgentCommand : Command
         }
     }
 
-    private static void FlushConversationIndex(AgentSession session, AgentConfig config)
+    private static void StartConversationIndexInBackground(AgentSession session, AgentConfig config)
     {
         if (session.PendingConversationIndexTurnCount == 0)
             return;
 
-        var timeoutSeconds = Math.Max(30, config.ProviderTurnTimeoutSeconds);
-        using var timeoutCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
-        try
-        {
-            var result = RhinoTaskPump.Run(
-                session.IndexConversationAsync,
-                timeoutCancellation.Token);
-            if (result.Updated)
-                CommandLineUi.Debug($"Session conversation indexed into memory: {result.Reason}. Use /memory undo to revert.");
-            else if (!result.Completed)
-                CommandLineUi.Debug($"Session conversation index remains pending: {result.Message}");
-            else if (config.ShowDebugMessages)
-                CommandLineUi.Debug($"Session conversation indexed; memory unchanged: {result.Message}");
-        }
-        catch (OperationCanceledException)
-        {
-            CommandLineUi.Debug(timeoutCancellation.IsCancellationRequested
-                ? $"Session conversation indexing timed out after {timeoutSeconds} seconds."
-                : "Session conversation indexing was canceled.");
-        }
-        catch (Exception ex)
-        {
-            CommandLineUi.Debug($"Session conversation indexing failed: {ex.Message}");
-        }
+        var result = session.StartConversationIndexing();
+        if (result.Started || config.ShowDebugMessages && result.Running)
+            CommandLineUi.Debug(result.Message);
     }
 
     private static bool TryHandleForcedPrompt(AgentUserMessage message, AgentSession session)

@@ -25,6 +25,12 @@ public sealed record AgentMemoryMaintenanceResult(
     string Reason,
     bool Completed = true);
 
+public sealed record AgentConversationIndexScheduleResult(
+    bool Started,
+    bool Running,
+    int TurnCount,
+    string Message);
+
 public sealed record AgentConversationTurn(
     int Sequence,
     string UserMessage,

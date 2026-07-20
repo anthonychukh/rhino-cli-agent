@@ -16,7 +16,8 @@ public static class AgentPromptBuilder
         IReadOnlyList<ToolExecutionResult> toolResults,
         string toolDescriptions,
         IReadOnlyList<SkillContext>? selectedSkills = null,
-        IReadOnlyList<AgentAttachment>? attachments = null)
+        IReadOnlyList<AgentAttachment>? attachments = null,
+        string? continuationDirective = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine("You are RhinoAgent, an agent running inside Rhino's command line.");
@@ -31,6 +32,7 @@ public static class AgentPromptBuilder
         sb.AppendLine("</rhino-agent>");
         sb.AppendLine("You may include multiple tool_calls. Do not put tool JSON in markdown fences.");
         sb.AppendLine("After tool results are returned, continue naturally and say what changed.");
+        sb.AppendLine("Progress updates are welcome, but an update such as \"I'll start modeling...\" is not a completed response. Follow it in the same response with at least one hidden RhinoAgent tool block, and never end a turn after only announcing an action.");
         sb.AppendLine("Do not use native Codex app-server tools, shell commands, or web search. Use only the RhinoAgent hidden tool blocks listed below.");
         sb.AppendLine("For prompts containing http or https product URLs, call fetch_url first, then create a practical model from the returned page metadata.");
         sb.AppendLine("After a fetch_url result, do not fetch again and do not write a plan. Immediately emit one execute_csharp tool call that creates a stylized but recognizable model.");
@@ -68,6 +70,13 @@ public static class AgentPromptBuilder
         sb.AppendLine(RhinoDocumentSummarizer.Summarize(doc));
         sb.AppendLine();
 
+        if (!string.IsNullOrWhiteSpace(continuationDirective))
+        {
+            sb.AppendLine("Continuation required for this provider round:");
+            sb.AppendLine(continuationDirective);
+            sb.AppendLine();
+        }
+
         if (attachments is { Count: > 0 })
         {
             sb.AppendLine("Attachments available for this turn:");
@@ -94,8 +103,8 @@ public static class AgentPromptBuilder
             sb.AppendLine("- The canonical project memory is embedded in the active Rhino .3dm document under RhinoAgent document user text.");
             sb.AppendLine("- Treat the memory shown below as durable project context, not as a filesystem file to edit.");
             sb.AppendLine("- If the user asks you to remember something, update memory, save project context, or maintain an AGENTS.md-style note, do not create or edit AGENTS.md, MEMORY.md, or any sidecar markdown file with write_file.");
-            sb.AppendLine("- Normal turns should answer the user first. RhinoAgent incrementally indexes completed session turns and privately merges only durable context into embedded memory.");
-            sb.AppendLine("- For manual memory operations, tell the user to use /memory show, /memory open, /memory refresh, /memory import, or /memory export.");
+            sb.AppendLine("- Normal turns should answer the user first. RhinoAgent queues completed session turns for a separate non-blocking background worker that privately merges only durable context into embedded memory.");
+            sb.AppendLine("- For manual memory operations, tell the user to use /memory show, /memory open, /memory index, /memory refresh, /memory import, or /memory export.");
             sb.AppendLine("Current Rhino document memory:");
             sb.AppendLine(AgentMemoryPromptFormatter.FormatForPrompt(doc));
             sb.AppendLine();
