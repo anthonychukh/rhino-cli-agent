@@ -59,6 +59,29 @@ public sealed class ProviderFactory
         return null;
     }
 
+    public IAgentProvider? ResolveModelCatalogProvider(AgentProviderKind provider)
+    {
+        if (provider is AgentProviderKind.Auto)
+            return null;
+
+        var status = _auth.GetStatus(provider, GetConfiguredPath(provider));
+        if (status is not { ExecutableFound: true, LoggedIn: true })
+            return null;
+
+        return provider == AgentProviderKind.Codex
+            ? new CodexAppServerProvider(
+                status.ExecutablePath!,
+                _config.CodexModel,
+                _config.CodexReasoningEffort,
+                _config.PermissionMode,
+                _workingDirectory)
+            : new ClaudeCliProvider(
+                status.ExecutablePath!,
+                _config.ClaudeModel,
+                _config.PermissionMode,
+                _workingDirectory);
+    }
+
     public IEnumerable<ProviderStatus> GetProviderStatuses()
     {
         yield return _auth.GetStatus(AgentProviderKind.Claude, _config.ClaudePath);

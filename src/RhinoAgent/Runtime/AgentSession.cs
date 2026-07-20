@@ -98,6 +98,18 @@ public sealed class AgentSession
             : $"  Active provider session: {provider.ActiveSessionId}";
     }
 
+    public AgentProviderKind ProviderKind => _provider.Kind;
+
+    public Task<IReadOnlyList<string>> GetAvailableModelsAsync(
+        Action<AgentProgress> progress,
+        CancellationToken cancellationToken)
+    {
+        if (_provider is not IModelCatalogProvider provider)
+            throw new NotSupportedException($"{_provider.DisplayName} does not expose a model catalog.");
+
+        return provider.GetAvailableModelsAsync(progress, cancellationToken);
+    }
+
     public int PendingConversationIndexTurnCount
     {
         get

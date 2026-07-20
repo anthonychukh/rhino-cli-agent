@@ -4,8 +4,11 @@ using RhinoAgent.Config;
 
 namespace RhinoAgent.Providers;
 
-public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationResumeProvider
+public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationResumeProvider, IModelCatalogProvider
 {
+    private static readonly IReadOnlyList<string> SupportedModelAliases =
+        ["fable", "opus", "sonnet"];
+
     private readonly bool _isolateSession;
     private string? _sessionId;
     private string? _resumeSessionId;
@@ -27,6 +30,15 @@ public sealed class ClaudeCliProvider : ExternalProcessProvider, IConversationRe
         ? $"Claude Code ({Model}, {PermissionMode}, isolated)"
         : $"Claude Code ({Model}, {PermissionMode}, persistent)";
     public string? ActiveSessionId => _sessionId ?? ClaudeSessionStore.LoadForWorkingDirectory(WorkingDirectory)?.SessionId;
+
+    public Task<IReadOnlyList<string>> GetAvailableModelsAsync(
+        Action<AgentProgress> progress,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        progress(new AgentProgress("Using the stable model aliases advertised by the installed Claude Code CLI."));
+        return Task.FromResult(SupportedModelAliases);
+    }
 
     public bool TryContinueLatestConversation(out string message)
     {

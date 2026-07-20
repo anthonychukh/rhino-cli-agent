@@ -22,6 +22,7 @@ public abstract class ExternalProcessProvider : IAgentProvider
     public abstract AgentProviderKind Kind { get; }
     public abstract string DisplayName { get; }
     public AgentProviderProcessMode ProcessMode => AgentProviderProcessMode.Stateless;
+    protected string ExecutablePath => _executablePath;
     protected string Model { get; }
     protected AgentPermissionMode PermissionMode { get; }
     protected string WorkingDirectory => _workingDirectory;

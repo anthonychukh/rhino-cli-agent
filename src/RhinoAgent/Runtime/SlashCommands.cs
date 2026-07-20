@@ -1,6 +1,7 @@
 using Rhino;
 using Rhino.Input.Custom;
 using RhinoAgent.Config;
+using RhinoAgent.Providers;
 using RhinoAgent.Skills;
 
 namespace RhinoAgent.Runtime;
@@ -71,7 +72,7 @@ public static class SlashCommands
                 AgentMemorySlashCommands.Handle(arg, config, services, session);
                 return SlashCommandResult.Handled;
             case "/model":
-                SetModel(config, arg);
+                SetModel(config, arg, session, services);
                 return SlashCommandResult.Handled;
             case "/effort":
             case "/reasoning":
@@ -504,7 +505,11 @@ public static class SlashCommands
         CommandLineUi.Debug($"Usage messages {(enabled ? "on" : "off")}.");
     }
 
-    private static void SetModel(AgentConfig config, string arg)
+    private static void SetModel(
+        AgentConfig config,
+        string arg,
+        AgentSession session,
+        AgentServices services)
     {
         if (arg.Length == 0)
         {
@@ -514,13 +519,105 @@ public static class SlashCommands
             return;
         }
 
-        if (config.Provider == AgentProviderKind.Codex)
-            config.CodexModel = arg;
+        var targetProvider = config.Provider == AgentProviderKind.Auto
+            ? session.ProviderKind
+            : config.Provider;
+        var providerName = targetProvider == AgentProviderKind.Codex ? "Codex" : "Claude";
+        var timeoutSeconds = Math.Clamp(
+            config.ProviderTurnTimeoutSeconds > 0 ? config.ProviderTurnTimeoutSeconds : 15,
+            10,
+            30);
+        using var timeoutCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+
+        IReadOnlyList<string> availableModels;
+        try
+        {
+            using (CommandLineUi.Thinking($"Validating {providerName} model", config.ShowDebugMessages))
+            {
+                availableModels = RhinoTaskPump.Run(
+                    LoadModelsAsync,
+                    timeoutCancellation.Token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            CommandLineUi.Debug(
+                $"Model was not changed because {providerName} validation timed out after {timeoutSeconds} seconds.");
+            return;
+        }
+        catch (Exception ex)
+        {
+            CommandLineUi.Debug(
+                $"Model was not changed because RhinoAgent could not validate it against {providerName}: {ex.Message}");
+            return;
+        }
+
+        var validation = ModelNameValidator.Validate(arg, availableModels);
+        if (!validation.IsValid || string.IsNullOrWhiteSpace(validation.CanonicalName))
+        {
+            var suggestion = string.IsNullOrWhiteSpace(validation.Suggestion)
+                ? ""
+                : $" Did you mean '{validation.Suggestion}'?";
+            CommandLineUi.Debug(
+                $"Unknown {providerName} model '{arg}'.{suggestion}{Environment.NewLine}" +
+                $"  Model was not changed.{Environment.NewLine}" +
+                $"  Available models: {string.Join(", ", availableModels)}");
+            return;
+        }
+
+        var canonicalName = validation.CanonicalName;
+        var currentModel = targetProvider == AgentProviderKind.Codex
+            ? config.CodexModel
+            : config.ClaudeModel;
+        if (string.Equals(currentModel, canonicalName, StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.Equals(currentModel, canonicalName, StringComparison.Ordinal))
+            {
+                if (targetProvider == AgentProviderKind.Codex)
+                    config.CodexModel = canonicalName;
+                else
+                    config.ClaudeModel = canonicalName;
+                AgentConfigStore.Save(config);
+            }
+
+            CommandLineUi.Debug($"Model already selected: {canonicalName}. No restart is needed.");
+            return;
+        }
+
+        if (targetProvider == AgentProviderKind.Codex)
+            config.CodexModel = canonicalName;
         else
-            config.ClaudeModel = arg;
+            config.ClaudeModel = canonicalName;
 
         AgentConfigStore.Save(config);
-        CommandLineUi.Debug($"Model saved: {arg}. Restart Agent to ensure the provider process uses it.");
+        CommandLineUi.Debug(
+            $"Model validated and saved: {canonicalName}. Restart Agent to use the new model.");
+
+        async Task<IReadOnlyList<string>> LoadModelsAsync(CancellationToken cancellationToken)
+        {
+            Action<AgentProgress> progress = update =>
+            {
+                if (config.ShowDebugMessages && !update.IsTransient)
+                    CommandLineUi.Debug(update.Message);
+            };
+
+            if (targetProvider == session.ProviderKind)
+            {
+                return await session
+                    .GetAvailableModelsAsync(progress, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            using var catalogProvider = services.ProviderFactory.ResolveModelCatalogProvider(targetProvider)
+                ?? throw new InvalidOperationException(
+                    $"No logged-in {providerName} CLI provider is available for model validation.");
+            if (catalogProvider is not IModelCatalogProvider catalog)
+                throw new NotSupportedException($"{providerName} does not expose a model catalog.");
+
+            return await catalog
+                .GetAvailableModelsAsync(progress, cancellationToken)
+                .ConfigureAwait(false);
+        }
     }
 
     private static void SetProviderTimeout(AgentConfig config, string arg)

@@ -5,7 +5,7 @@ using RhinoAgent.Config;
 
 namespace RhinoAgent.Providers;
 
-public sealed class CodexAppServerProvider : IAgentProvider, IConversationResumeProvider
+public sealed class CodexAppServerProvider : IAgentProvider, IConversationResumeProvider, IModelCatalogProvider
 {
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
@@ -70,6 +70,58 @@ public sealed class CodexAppServerProvider : IAgentProvider, IConversationResume
         }
     }
 
+    public async Task<IReadOnlyList<string>> GetAvailableModelsAsync(
+        Action<AgentProgress> progress,
+        CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await EnsureInitializedAsync(progress, cancellationToken).ConfigureAwait(false);
+
+            var models = new List<string>();
+            string? cursor = null;
+            do
+            {
+                var requestId = Guid.NewGuid().ToString();
+                await SendAsync(new
+                {
+                    id = requestId,
+                    method = "model/list",
+                    @params = new
+                    {
+                        includeHidden = false,
+                        cursor
+                    }
+                }, cancellationToken).ConfigureAwait(false);
+
+                using var response = await WaitForResponseAsync(requestId, progress, cancellationToken)
+                    .ConfigureAwait(false);
+                models.AddRange(ReadAvailableModels(response.RootElement, out cursor));
+            }
+            while (!string.IsNullOrWhiteSpace(cursor));
+
+            var available = models
+                .Where(model => !string.IsNullOrWhiteSpace(model))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (available.Length == 0)
+                throw new InvalidOperationException("Codex returned an empty model catalog.");
+
+            progress(new AgentProgress($"Codex model catalog returned {available.Length} available model(s)."));
+            return available;
+        }
+        catch
+        {
+            StopProcess();
+            throw;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public bool TryContinueLatestConversation(out string message)
     {
         var saved = CodexSessionStore.LoadForWorkingDirectory(_workingDirectory);
@@ -119,6 +171,14 @@ public sealed class CodexAppServerProvider : IAgentProvider, IConversationResume
 
     private async Task EnsureReadyAsync(Action<AgentProgress> progress, CancellationToken cancellationToken)
     {
+        await EnsureInitializedAsync(progress, cancellationToken).ConfigureAwait(false);
+
+        if (string.IsNullOrWhiteSpace(_threadId))
+            await ResumeOrStartThreadAsync(progress, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task EnsureInitializedAsync(Action<AgentProgress> progress, CancellationToken cancellationToken)
+    {
         ThrowIfDisposed();
         if (_process is null || _process.HasExited)
             StartProcess(progress);
@@ -160,9 +220,6 @@ public sealed class CodexAppServerProvider : IAgentProvider, IConversationResume
             _initialized = true;
             progress(new AgentProgress("Codex app-server initialized."));
         }
-
-        if (string.IsNullOrWhiteSpace(_threadId))
-            await ResumeOrStartThreadAsync(progress, cancellationToken).ConfigureAwait(false);
     }
 
     private void StartProcess(Action<AgentProgress> progress)
@@ -636,6 +693,35 @@ public sealed class CodexAppServerProvider : IAgentProvider, IConversationResume
                 : error.ToString();
             throw new InvalidOperationException(message ?? "Codex app-server returned an error response.");
         }
+    }
+
+    internal static IReadOnlyList<string> ReadAvailableModels(
+        JsonElement root,
+        out string? nextCursor)
+    {
+        nextCursor = null;
+        if (!root.TryGetProperty("result", out var result))
+            return [];
+
+        if (result.TryGetProperty("nextCursor", out var cursorElement)
+            && cursorElement.ValueKind == JsonValueKind.String)
+        {
+            nextCursor = cursorElement.GetString();
+        }
+
+        if (!result.TryGetProperty("data", out var data)
+            || data.ValueKind != JsonValueKind.Array)
+            return [];
+
+        var models = new List<string>();
+        foreach (var item in data.EnumerateArray())
+        {
+            var model = ReadString(item, "model") ?? ReadString(item, "id");
+            if (!string.IsNullOrWhiteSpace(model))
+                models.Add(model);
+        }
+
+        return models;
     }
 
     private static bool TryReadParams(JsonElement root, out JsonElement value) =>

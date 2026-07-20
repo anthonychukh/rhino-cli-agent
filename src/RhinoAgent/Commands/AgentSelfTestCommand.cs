@@ -53,6 +53,9 @@ public sealed class AgentSelfTestCommand : Command
             || AgentCommand.TryResolveManualRhinoCommand(aliasProbe, out _, out var aliasMatchedBy) && aliasMatchedBy == "alias";
         success = success && lineRecognized && prefixedRecognized && aliasRecognized;
 
+        var modelValidation = RunModelValidationSelfTest();
+        success = success && modelValidation.Ok;
+
         var scriptedToolRecovery = RunScriptedToolRecovery(doc);
         success = success && scriptedToolRecovery.Ok;
 
@@ -105,6 +108,7 @@ public sealed class AgentSelfTestCommand : Command
                 aliasProbe,
                 aliasRecognized
             },
+            modelValidation,
             scriptedToolRecovery,
             announcedActionContinuation,
             viewportCaptureAwareness,
@@ -1349,6 +1353,43 @@ public sealed class AgentSelfTestCommand : Command
         }
     }
 
+    private static ModelValidationSelfTestResult RunModelValidationSelfTest()
+    {
+        using var response = JsonDocument.Parse(
+            """
+            {
+              "id": "models",
+              "result": {
+                "data": [
+                  { "id": "gpt-5.6-sol", "model": "gpt-5.6-sol" },
+                  { "id": "gpt-5.5", "model": "gpt-5.5" }
+                ],
+                "nextCursor": "next-page"
+              }
+            }
+            """);
+        var parsedModels = CodexAppServerProvider.ReadAvailableModels(
+            response.RootElement,
+            out var nextCursor);
+        var exact = ModelNameValidator.Validate("GPT-5.5", parsedModels);
+        var typo = ModelNameValidator.Validate("gpt5.5", parsedModels);
+        var catalogParsingOk = parsedModels.SequenceEqual(["gpt-5.6-sol", "gpt-5.5"])
+            && nextCursor == "next-page";
+        var exactMatchOk = exact.IsValid
+            && exact.CanonicalName == "gpt-5.5"
+            && exact.Suggestion is null;
+        var typoRejected = !typo.IsValid && typo.CanonicalName is null;
+        var closestSuggestionOk = typo.Suggestion == "gpt-5.5";
+
+        return new ModelValidationSelfTestResult(
+            catalogParsingOk && exactMatchOk && typoRejected && closestSuggestionOk,
+            catalogParsingOk,
+            exactMatchOk,
+            typoRejected,
+            closestSuggestionOk,
+            typo.Suggestion);
+    }
+
     private sealed record ScriptedToolRecoveryResult(
         bool Ok,
         string Marker,
@@ -1363,6 +1404,14 @@ public sealed class AgentSelfTestCommand : Command
         ScriptedBoxProbe Box,
         string VisibleText,
         string? Error);
+
+    private sealed record ModelValidationSelfTestResult(
+        bool Ok,
+        bool CatalogParsingOk,
+        bool ExactMatchOk,
+        bool TypoRejected,
+        bool ClosestSuggestionOk,
+        string? SuggestedModel);
 
     private sealed record ScriptedBoxProbe(
         bool Ok,

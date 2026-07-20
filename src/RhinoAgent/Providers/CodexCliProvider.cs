@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace RhinoAgent.Providers;
 
-public sealed class CodexCliProvider : ExternalProcessProvider
+public sealed class CodexCliProvider : ExternalProcessProvider, IModelCatalogProvider
 {
     public CodexCliProvider(string executablePath, string model, AgentPermissionMode permissionMode, string workingDirectory)
         : base(executablePath, model, permissionMode, workingDirectory)
@@ -40,6 +40,21 @@ public sealed class CodexCliProvider : ExternalProcessProvider
 
     protected override IProviderOutputCollector CreateCollector(Action<AgentProgress> progress) =>
         new CodexOutputCollector(progress, Model);
+
+    public async Task<IReadOnlyList<string>> GetAvailableModelsAsync(
+        Action<AgentProgress> progress,
+        CancellationToken cancellationToken)
+    {
+        using var catalogProvider = new CodexAppServerProvider(
+            ExecutablePath,
+            Model,
+            "",
+            PermissionMode,
+            WorkingDirectory);
+        return await catalogProvider
+            .GetAvailableModelsAsync(progress, cancellationToken)
+            .ConfigureAwait(false);
+    }
 
     private static string MapSandbox(AgentPermissionMode mode) => mode switch
     {

@@ -18,3 +18,10 @@ public interface IConversationResumeProvider
     bool TryContinueLatestConversation(out string message);
     bool TryResumeConversation(string sessionId, out string message);
 }
+
+public interface IModelCatalogProvider
+{
+    Task<IReadOnlyList<string>> GetAvailableModelsAsync(
+        Action<AgentProgress> progress,
+        CancellationToken cancellationToken);
+}

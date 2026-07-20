@@ -113,7 +113,7 @@ Slash commands inside `Agent`:
 - `/continue [latest|session-id]`
 - `/resume [latest|session-id]`
 - `/process long|stateless`
-- `/model <model>`
+- `/model <model>` validates and sets the active provider model
 - `/effort low|medium|high|off`
 - `/mode ask|auto|full|plan`
 - `/debug on|off`
@@ -156,6 +156,8 @@ The private maintenance pass merges durable goals, decisions, constraints, conve
 `long` is the default process mode. Claude Code currently keeps the existing print-mode provider path; the long-running app-server implementation is Codex-specific.
 
 Changing `/process`, `/mode`, `/model`, or `/effort` saves config immediately, but restart `Agent` to switch the provider process architecture, provider-level sandbox settings, model, or Codex reasoning effort for the already-created provider object.
+
+`/model` validates before saving. Codex names are checked against the live `model/list` catalog returned for the logged-in account; Claude names are checked against Claude Code's stable model aliases. Invalid names leave the config unchanged and show the closest available name, so `/model gpt5.5` suggests `/model gpt-5.5` without asking for a restart.
 
 ## Tool Surface
 
