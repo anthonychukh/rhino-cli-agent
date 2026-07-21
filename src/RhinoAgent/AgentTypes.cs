@@ -37,6 +37,7 @@ public sealed class AgentConfig
     public int MaxToolRounds { get; set; } = 4;
     public int ProviderTurnTimeoutSeconds { get; set; } = 180;
     public bool ShowDebugMessages { get; set; } = true;
+    public bool ShowTipMessages { get; set; } = true;
     public bool ShowUsageMessages { get; set; } = true;
     public bool EnableDocumentMemory { get; set; } = true;
 }

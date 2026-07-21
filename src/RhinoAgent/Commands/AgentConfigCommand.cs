@@ -89,6 +89,7 @@ public sealed class AgentConfigCommand : Command
             $"ProcessMode: {config.ProviderProcessMode}",
             $"PermissionMode: {config.PermissionMode}",
             $"DebugMessages: {(config.ShowDebugMessages ? "on" : "off")}",
+            $"TipMessages: {(config.ShowTipMessages ? "on" : "off")}",
             $"UsageMessages: {(config.ShowUsageMessages ? "on" : "off")}",
             $"ClaudeModel: {config.ClaudeModel}",
             $"CodexModel: {config.CodexModel}",

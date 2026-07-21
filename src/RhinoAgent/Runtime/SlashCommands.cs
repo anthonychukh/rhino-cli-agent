@@ -36,6 +36,10 @@ public static class SlashCommands
             case "/help":
                 PrintHelp();
                 return SlashCommandResult.Handled;
+            case "/tip":
+            case "/tips":
+                HandleTipCommand(config, arg);
+                return SlashCommandResult.Handled;
             case "/skill":
             case "/skills":
                 HandleSkillCommand(arg, config, session, services);
@@ -123,6 +127,7 @@ public static class SlashCommands
             "RhinoAgent slash commands:",
             "  Attach files              Ctrl+V/drop any regular file; multiple files become [.ext 1], [.ext 2], ...",
             "  /help                     Show this help",
+            "  /tips [on|off]            Show all tips or toggle startup tips",
             "  /status                   Show provider/auth/config status",
             "  /login [claude|codex]     Start provider login in a terminal",
             "  /provider [auto|claude|codex]",
@@ -412,6 +417,7 @@ public static class SlashCommands
             $"PermissionMode: {config.PermissionMode}",
             $"Provider timeout: {FormatTimeout(config.ProviderTurnTimeoutSeconds)}",
             $"Debug messages: {(config.ShowDebugMessages ? "on" : "off")}",
+            $"Tip messages: {(config.ShowTipMessages ? "on" : "off")}",
             $"Usage messages: {(config.ShowUsageMessages ? "on" : "off")}",
             $"Document memory: {(config.EnableDocumentMemory ? "on" : "off")}",
             $"Claude model: {config.ClaudeModel}",
@@ -487,6 +493,25 @@ public static class SlashCommands
         config.ShowDebugMessages = enabled;
         AgentConfigStore.Save(config);
         CommandLineUi.Debug($"Debug messages {(enabled ? "on" : "off")}.");
+    }
+
+    private static void HandleTipCommand(AgentConfig config, string arg)
+    {
+        if (string.IsNullOrWhiteSpace(arg))
+        {
+            CommandLineUi.Tip(AgentTips.FormatAll());
+            return;
+        }
+
+        if (!TryParseOnOff(arg, out var enabled))
+        {
+            CommandLineUi.Tip($"Tip messages are {(config.ShowTipMessages ? "on" : "off")}. Usage: /tips [on|off]");
+            return;
+        }
+
+        config.ShowTipMessages = enabled;
+        AgentConfigStore.Save(config);
+        CommandLineUi.Tip($"Tip messages {(enabled ? "on" : "off")}.");
     }
 
     private static void SetUsageMessages(AgentConfig config, string arg)

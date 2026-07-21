@@ -24,7 +24,7 @@ public sealed class AgentCommand : Command
         CommandLineUi.Debug(
             $"RhinoAgent{Environment.NewLine}" +
             $"  Config: {AgentConfigStore.ConfigPath}{Environment.NewLine}" +
-            "  Type /help for commands, /exit to leave, /run or ! for manual Rhino command passthrough.");
+            "  Type /help for commands, /tips for all tips, /exit to leave, /run or ! for manual Rhino command passthrough.");
 
         var provider = services.ProviderFactory.ResolveInteractiveProvider(config);
         if (provider is null)
@@ -33,6 +33,7 @@ public sealed class AgentCommand : Command
                 "No logged-in Claude or Codex CLI was detected." + Environment.NewLine +
                 "Starting first-run login. Choose a provider in the prompt below.");
             LoginFlow.Run(config, services);
+            PrintStartupTip(config);
             return Result.Success;
         }
 
@@ -40,6 +41,7 @@ public sealed class AgentCommand : Command
             $"Provider: {provider.DisplayName}{Environment.NewLine}" +
             $"Process: {provider.ProcessMode}{Environment.NewLine}" +
             $"Mode: {config.PermissionMode}");
+        PrintStartupTip(config);
 
         using (provider)
         {
@@ -99,6 +101,12 @@ public sealed class AgentCommand : Command
                 StartConversationIndexInBackground(session, config);
             }
         }
+    }
+
+    private static void PrintStartupTip(AgentConfig config)
+    {
+        if (config.ShowTipMessages)
+            CommandLineUi.Tip($"{AgentTips.GetRandom()} (Type /tips for all tips or /tips off to hide startup tips.)");
     }
 
     private static string? ReadLiteralLine(string prompt, AgentAttachmentComposer attachmentComposer)

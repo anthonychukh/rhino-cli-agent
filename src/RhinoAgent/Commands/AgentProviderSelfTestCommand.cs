@@ -149,6 +149,7 @@ public sealed class AgentProviderSelfTestCommand : Command
             WorkingDirectory = source.WorkingDirectory,
             MaxToolRounds = 1,
             ShowDebugMessages = source.ShowDebugMessages,
+            ShowTipMessages = source.ShowTipMessages,
             ShowUsageMessages = source.ShowUsageMessages,
             EnableDocumentMemory = false
         };

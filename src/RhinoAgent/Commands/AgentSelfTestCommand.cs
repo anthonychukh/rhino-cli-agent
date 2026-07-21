@@ -53,6 +53,24 @@ public sealed class AgentSelfTestCommand : Command
             || AgentCommand.TryResolveManualRhinoCommand(aliasProbe, out _, out var aliasMatchedBy) && aliasMatchedBy == "alias";
         success = success && lineRecognized && prefixedRecognized && aliasRecognized;
 
+        var randomTip = AgentTips.GetRandom();
+        var formattedTips = AgentTips.FormatAll();
+        var tips = new
+        {
+            ok = AgentTips.All.Count > 0
+                && new AgentConfig().ShowTipMessages
+                && AgentTips.All.All(tip => !string.IsNullOrWhiteSpace(tip))
+                && AgentTips.All.Distinct(StringComparer.Ordinal).Count() == AgentTips.All.Count
+                && AgentTips.All.Contains(randomTip)
+                && formattedTips.StartsWith("RhinoAgent tips:", StringComparison.Ordinal)
+                && AgentTips.All.All(tip => formattedTips.Contains(tip, StringComparison.Ordinal)),
+            count = AgentTips.All.Count,
+            defaultEnabled = new AgentConfig().ShowTipMessages,
+            randomTip,
+            formattedLineCount = formattedTips.Split(System.Environment.NewLine).Length
+        };
+        success = success && tips.ok;
+
         var modelValidation = RunModelValidationSelfTest();
         success = success && modelValidation.Ok;
 
@@ -108,6 +126,7 @@ public sealed class AgentSelfTestCommand : Command
                 aliasProbe,
                 aliasRecognized
             },
+            tips,
             modelValidation,
             scriptedToolRecovery,
             announcedActionContinuation,

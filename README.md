@@ -4,6 +4,8 @@ RhinoAgent is a Rhino 8 plug-in that starts a Claude Code / Codex-style agent di
 
 Type `Agent`, chat in the normal Rhino command prompt, and let the agent inspect or modify the active model through RhinoCommon, native Rhino commands, Rhino Python, C# scripts, and local project files.
 
+Each new `Agent` session shows one randomly selected usage tip in its own `Tip` message category before the first prompt. Type `/tips` to print the complete numbered list, or `/tips on|off` to enable or disable automatic startup tips. The setting persists in RhinoAgent's config.
+
 While the `Agent` prompt is active on Windows, copy or drag any regular local file into Rhino's command line. RhinoAgent accepts one or many Explorer files, standalone paths, and quoted paths inside a prompt. Placeholders use a lowercase extension plus a session-stable counter, such as `[.stl 1]`, `[.stp 1]`, and `[.stp 2]`; extensionless files use `[file 1]`. Multiple pasted or dropped files accumulate without submitting the prompt so you can type a request such as `Compare [.stp 1] with [.stp 2]`.
 
 PNG, JPEG, GIF, and WebP files up to 20 MB continue through each provider's native image channel. Every other file stays local: the prompt receives a structured attachment manifest and the model calls RhinoAgent's read-only attachment tools to choose an installed interpreter. Text gets a bounded preview, ZIP files get a non-extracting listing, recognized 3D formats are inspected in a disposable headless Rhino document, and unknown binaries get an honest bounded signature probe. User-owned files are never deleted or modified. Raw clipboard captures live only under `%TEMP%/RhinoAgent/attachments` and are released after the turn; a guarded 24-hour startup sweep handles crash leftovers.
@@ -107,6 +109,7 @@ Rhino commands:
 Slash commands inside `Agent`:
 
 - `/help`
+- `/tips [on|off]`
 - `/status`
 - `/login`
 - `/provider auto|claude|codex`
@@ -136,7 +139,7 @@ Slash commands inside `Agent`:
 - `full`: execute RhinoAgent tool calls without prompting, except operations such as importing an attachment or changing saved skills that are always confirmation-gated.
 - `plan`: show intended tool calls without executing them.
 
-`/debug off` hides provider progress and tool execution debug messages inside the active `Agent` session. `/usage off` hides the separate usage message line after provider turns. `/effort` controls Codex app-server reasoning effort for new `Agent` sessions; `off` leaves effort unset so Codex uses its provider default.
+`/debug off` hides provider progress and tool execution debug messages inside the active `Agent` session. `/tips off` hides the separate startup tip message, while explicit `/tips` still prints the full list. `/usage off` hides the separate usage message line after provider turns. `/effort` controls Codex app-server reasoning effort for new `Agent` sessions; `off` leaves effort unset so Codex uses its provider default.
 
 Exact token and cost usage are only displayed when the provider CLI emits exact usage. RhinoAgent does not estimate usage.
 
@@ -247,6 +250,7 @@ Example:
   "maxToolRounds": 4,
   "providerTurnTimeoutSeconds": 180,
   "showDebugMessages": true,
+  "showTipMessages": true,
   "showUsageMessages": true
 }
 ```

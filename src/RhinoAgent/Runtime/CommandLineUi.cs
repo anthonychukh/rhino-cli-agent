@@ -7,10 +7,12 @@ public static class CommandLineUi
 {
     private const string UserIcon = "▶";
     private const string DebugIcon = ".";
+    private const string TipIcon = "?";
     private const string UsageIcon = "$";
     private const string AgentIcon = "◀";
     private const string UserLabel = "You";
     private const string DebugLabel = "Debug";
+    private const string TipLabel = "Tip";
     private const string UsageLabel = "Usage";
     private const string AgentLabel = "Agent";
     private const int ThinkingFrameMs = 350;
@@ -34,6 +36,9 @@ public static class CommandLineUi
 
     public static void Debug(string message) =>
         WriteEntry(EntryKind.Debug, DebugIcon, DebugLabel, message);
+
+    public static void Tip(string message) =>
+        WriteEntry(EntryKind.Tip, TipIcon, TipLabel, message);
 
     public static void Usage(string message) =>
         WriteEntry(EntryKind.Usage, UsageIcon, UsageLabel, message);
@@ -71,6 +76,7 @@ public static class CommandLineUi
         kind switch
         {
             EntryKind.Debug => LastEntryKind != EntryKind.Debug,
+            EntryKind.Tip => LastEntryKind != EntryKind.Tip,
             EntryKind.Usage => LastEntryKind != EntryKind.Usage,
             _ => true
         };
@@ -196,6 +202,7 @@ public static class CommandLineUi
     private enum EntryKind
     {
         Debug,
+        Tip,
         Usage,
         Agent
     }
